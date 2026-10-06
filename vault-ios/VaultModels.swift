@@ -1,7 +1,5 @@
 import Foundation
 
-// MARK: - Folder Model
-
 struct VaultFolder: Identifiable, Codable, Equatable, Hashable {
     let id: UUID
     var name: String
@@ -28,17 +26,16 @@ struct VaultFolder: Identifiable, Codable, Equatable, Hashable {
     }
 }
 
-// MARK: - File Descriptor (Zero RAM Overhead)
-
-/// File metadata header. The file's encrypted ciphertext is stored in isolated disk blocks
-/// and only decrypted into RAM when previewed or exported.
+/// Lightweight index descriptor with precomputed SHA-256 checksum
 struct EncryptedFileHeader: Identifiable, Codable, Equatable {
     let id: UUID
     var file_name: String
     var file_size_bytes: Int
     var folder_id: UUID?
     var created_at: Date
-    var storage_filename: String
+    var block_offset: UInt64
+    var block_length: UInt64
+    var sha256_checksum: String // Precomputed SHA-256 hex string
 
     init(
         id: UUID = UUID(),
@@ -46,18 +43,22 @@ struct EncryptedFileHeader: Identifiable, Codable, Equatable {
         file_size_bytes: Int,
         folder_id: UUID? = nil,
         created_at: Date = Date(),
-        storage_filename: String = UUID().uuidString
+        block_offset: UInt64,
+        block_length: UInt64,
+        sha256_checksum: String
     ) {
         self.id = id
         self.file_name = file_name
         self.file_size_bytes = file_size_bytes
         self.folder_id = folder_id
         self.created_at = created_at
-        self.storage_filename = storage_filename
+        self.block_offset = block_offset
+        self.block_length = block_length
+        self.sha256_checksum = sha256_checksum
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, file_name, file_size_bytes, folder_id, created_at, storage_filename
+        case id, file_name, file_size_bytes, folder_id, created_at, block_offset, block_length, sha256_checksum
     }
 
     init(from decoder: Decoder) throws {
@@ -67,11 +68,12 @@ struct EncryptedFileHeader: Identifiable, Codable, Equatable {
         self.file_size_bytes = try container.decode(Int.self, forKey: .file_size_bytes)
         self.folder_id = try container.decodeIfPresent(UUID.self, forKey: .folder_id)
         self.created_at = try container.decodeIfPresent(Date.self, forKey: .created_at) ?? Date()
-        self.storage_filename = try container.decode(String.self, forKey: .storage_filename)
+        self.block_offset = try container.decode(UInt64.self, forKey: .block_offset)
+        self.block_length = try container.decode(UInt64.self, forKey: .block_length)
+        // Backward compatibility for vaults without checksums
+        self.sha256_checksum = try container.decodeIfPresent(String.self, forKey: .sha256_checksum) ?? ""
     }
 }
-
-// MARK: - Sorting & Indexing
 
 enum VaultSortOption: String, CaseIterable, Identifiable {
     case name = "Name"
