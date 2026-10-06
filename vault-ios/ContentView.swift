@@ -37,9 +37,8 @@ struct ContentView: View {
     @State private var movingItem: (id: UUID, name: String, isFolder: Bool)? = nil
     @State private var detailedFileItem: EncryptedFileHeader? = nil
 
-    // Export & QuickLook Preview State
+    // QuickLook Preview State
     @State private var previewFileLocation: URL? = nil
-    @State private var shareSheetItem: ShareItem? = nil
 
     var body: some View {
         NavigationStack {
@@ -101,9 +100,6 @@ struct ContentView: View {
             )) { wrapper in
                 moveItemSheet(item: wrapper.item).presentationDetents([.medium])
             }
-            .sheet(item: $shareSheetItem) { item in
-                ShareActivityView(activityItems: [item.url])
-            }
             .alert("New Folder", isPresented: $isCreatingFolder) {
                 TextField("Folder Name", text: $newFolderNameBuffer)
                 Button("Create") {
@@ -150,7 +146,7 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Breadcrumb Header with Extension Notification Badge
+    // MARK: - Breadcrumb Header (No Default Navigation Bar)
 
     private var customPathHeader: some View {
         VStack(spacing: 8) {
@@ -197,24 +193,6 @@ struct ContentView: View {
                 }
 
                 Spacer()
-
-                // Shared Extension Spool Action (if pending items arrived)
-                if manager.pendingSharedImportsCount > 0 {
-                    Button {
-                        Task { await manager.drainSharedExtensionSpool() }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "square.and.arrow.down.fill")
-                            Text("\(manager.pendingSharedImportsCount)")
-                        }
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
-                        .background(Color.blue)
-                        .clipShape(Capsule())
-                    }
-                }
 
                 Menu {
                     Picker("Sort By", selection: $sortOption) {
@@ -369,10 +347,6 @@ struct ContentView: View {
                                 Button(role: .destructive) {
                                     Task { await manager.deleteFile(id: file.id) }
                                 } label: { Label("Delete", systemImage: "trash") }
-
-                                Button { exportAndShare(file: file) } label: {
-                                    Label("Export", systemImage: "square.and.arrow.up")
-                                }.tint(.blue)
 
                                 Button {
                                     detailedFileItem = file
@@ -714,19 +688,6 @@ struct ContentView: View {
         }
     }
 
-    private func exportAndShare(file: EncryptedFileHeader) {
-        Task {
-            do {
-                let decrypted = try manager.readAndDecryptPayload(for: file)
-                let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(file.file_name)
-                try decrypted.write(to: tempURL, options: .atomic)
-                self.shareSheetItem = ShareItem(url: tempURL)
-            } catch {
-                manager.activeError = "Export error: \(error.localizedDescription)"
-            }
-        }
-    }
-
     private func handleFileImports(_ result: Result<[URL], Error>) {
         if case .success(let urls) = result {
             let activeFolder = currentFolderId
@@ -752,23 +713,21 @@ struct ContentView: View {
             pendingTargetURL = selected
             isCreatingVault = false
 
-            // Check if biometric credentials exist for this specific container
             if manager.isBiometricsAvailable, let savedPwd = manager.readPasswordFromKeychain(for: selected) {
                 Task {
-                    // Try Face ID / Touch ID first
                     let success = await manager.evaluateBiometricPrompt()
                     if success {
                         await manager.unlockVault(at: selected, password: savedPwd)
                     } else {
-                        // If user canceled or Face ID failed, present password sheet as fallback
                         await MainActor.run {
+                            self.passwordBuffer = ""
                             self.isPresentingUnlockSheet = true
                         }
                     }
                 }
             } else {
-                // Give system file-picker sheet time to fully dismiss before triggering unlock sheet
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                    self.passwordBuffer = ""
                     self.isPresentingUnlockSheet = true
                 }
             }
@@ -789,24 +748,11 @@ struct ContentView: View {
     }
 }
 
+// MARK: - Supporting Helpers
+
 struct MoveItemWrapper: Identifiable {
     let id = UUID()
     let item: (id: UUID, name: String, isFolder: Bool)
-}
-
-struct ShareItem: Identifiable {
-    let id = UUID()
-    let url: URL
-}
-
-struct ShareActivityView: UIViewControllerRepresentable {
-    let activityItems: [Any]
-
-    func makeUIViewController(context: Context) -> UIActivityViewController {
-        UIActivityViewController(activityItems: activityItems, applicationActivities: nil)
-    }
-
-    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
 
 struct BlankVaultDocument: FileDocument {

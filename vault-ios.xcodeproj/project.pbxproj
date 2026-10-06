@@ -8,18 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		953FAC3A3073E240001037F0 /* Argon2Swift in Frameworks */ = {isa = PBXBuildFile; productRef = 953FAC393073E240001037F0 /* Argon2Swift */; };
-		953FAC653074AA60001037F0 /* IronVaultShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 953FAC5B3074AA5F001037F0 /* IronVaultShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
-
-/* Begin PBXContainerItemProxy section */
-		953FAC633074AA60001037F0 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = 000000000000000000000000 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = 953FAC5A3074AA5F001037F0;
-			remoteInfo = IronVaultShare;
-		};
-/* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
 		953FAC663074AA60001037F0 /* Embed Foundation Extensions */ = {
@@ -27,7 +16,6 @@
 			dstPath = "";
 			dstSubfolder = PlugIns;
 			files = (
-				953FAC653074AA60001037F0 /* IronVaultShare.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
 		};
@@ -35,7 +23,6 @@
 
 /* Begin PBXFileReference section */
 		000000000000000000000120 /* vault-ios.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "vault-ios.app"; sourceTree = BUILT_PRODUCTS_DIR; };
-		953FAC5B3074AA5F001037F0 /* IronVaultShare.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = IronVaultShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -45,13 +32,6 @@
 				Info.plist,
 			);
 			target = 000000000000000100000000 /* vault-ios */;
-		};
-		953FAC6A3074AA60001037F0 /* Exceptions for "IronVaultShare" folder in "IronVaultShare" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				Info.plist,
-			);
-			target = 953FAC5A3074AA5F001037F0 /* IronVaultShare */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
@@ -64,14 +44,6 @@
 			path = "vault-ios";
 			sourceTree = "<group>";
 		};
-		953FAC5C3074AA5F001037F0 /* IronVaultShare */ = {
-			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				953FAC6A3074AA60001037F0 /* Exceptions for "IronVaultShare" folder in "IronVaultShare" target */,
-			);
-			path = IronVaultShare;
-			sourceTree = "<group>";
-		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -81,11 +53,6 @@
 				953FAC3A3073E240001037F0 /* Argon2Swift in Frameworks */,
 			);
 		};
-		953FAC583074AA5F001037F0 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			files = (
-			);
-		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -93,7 +60,6 @@
 			isa = PBXGroup;
 			children = (
 				000000000000000000000010 /* vault-ios */,
-				953FAC5C3074AA5F001037F0 /* IronVaultShare */,
 				000000000000000000000020 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -102,7 +68,6 @@
 			isa = PBXGroup;
 			children = (
 				000000000000000000000120 /* vault-ios.app */,
-				953FAC5B3074AA5F001037F0 /* IronVaultShare.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -121,9 +86,6 @@
 			);
 			buildRules = (
 			);
-			dependencies = (
-				953FAC643074AA60001037F0 /* PBXTargetDependency */,
-			);
 			fileSystemSynchronizedGroups = (
 				000000000000000000000010 /* vault-ios */,
 			);
@@ -134,24 +96,6 @@
 			productName = MyApp;
 			productReference = 000000000000000000000120 /* vault-ios.app */;
 			productType = "com.apple.product-type.application";
-		};
-		953FAC5A3074AA5F001037F0 /* IronVaultShare */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = 953FAC693074AA60001037F0 /* Build configuration list for PBXNativeTarget "IronVaultShare" */;
-			buildPhases = (
-				953FAC573074AA5F001037F0 /* Sources */,
-				953FAC583074AA5F001037F0 /* Frameworks */,
-				953FAC593074AA5F001037F0 /* Resources */,
-			);
-			buildRules = (
-			);
-			fileSystemSynchronizedGroups = (
-				953FAC5C3074AA5F001037F0 /* IronVaultShare */,
-			);
-			name = IronVaultShare;
-			productName = IronVaultShare;
-			productReference = 953FAC5B3074AA5F001037F0 /* IronVaultShare.appex */;
-			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -165,9 +109,6 @@
 				TargetAttributes = {
 					000000000000000100000000 = {
 						CreatedOnToolsVersion = 26.3;
-					};
-					953FAC5A3074AA5F001037F0 = {
-						CreatedOnToolsVersion = 27.0;
 					};
 				};
 			};
@@ -189,18 +130,12 @@
 			projectRoot = "";
 			targets = (
 				000000000000000100000000 /* vault-ios */,
-				953FAC5A3074AA5F001037F0 /* IronVaultShare */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		000000000000000140000000 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			files = (
-			);
-		};
-		953FAC593074AA5F001037F0 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
 			);
@@ -213,20 +148,7 @@
 			files = (
 			);
 		};
-		953FAC573074AA5F001037F0 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			files = (
-			);
-		};
 /* End PBXSourcesBuildPhase section */
-
-/* Begin PBXTargetDependency section */
-		953FAC643074AA60001037F0 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = 953FAC5A3074AA5F001037F0 /* IronVaultShare */;
-			targetProxy = 953FAC633074AA60001037F0 /* PBXContainerItemProxy */;
-		};
-/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		000000000000000011000000 /* Debug configuration for PBXProject "vault-ios" */ = {
@@ -460,69 +382,6 @@
 			};
 			name = Release;
 		};
-		953FAC673074AA60001037F0 /* Debug configuration for PBXNativeTarget "IronVaultShare" */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = IronVaultShare/IronVaultShare.entitlements;
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = MV3N99WGYJ;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = IronVaultShare/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = IronVaultShare;
-				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@executable_path/../../Frameworks",
-				);
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.likithsai.vaultios.IronVaultShare;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				REGISTER_APP_GROUPS = YES;
-				SDKROOT = iphoneos;
-				SKIP_INSTALL = YES;
-				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
-			};
-			name = Debug;
-		};
-		953FAC683074AA60001037F0 /* Release configuration for PBXNativeTarget "IronVaultShare" */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_ENTITLEMENTS = IronVaultShare/IronVaultShare.entitlements;
-				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = MV3N99WGYJ;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = IronVaultShare/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = IronVaultShare;
-				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@executable_path/../../Frameworks",
-				);
-				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.likithsai.vaultios.IronVaultShare;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				REGISTER_APP_GROUPS = YES;
-				SDKROOT = iphoneos;
-				SKIP_INSTALL = YES;
-				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SWIFT_APPROACHABLE_CONCURRENCY = YES;
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
-				VALIDATE_PRODUCT = YES;
-			};
-			name = Release;
-		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -539,14 +398,6 @@
 			buildConfigurations = (
 				000000000000000111000000 /* Debug configuration for PBXNativeTarget "vault-ios" */,
 				000000000000000112000000 /* Release configuration for PBXNativeTarget "vault-ios" */,
-			);
-			defaultConfigurationName = Release;
-		};
-		953FAC693074AA60001037F0 /* Build configuration list for PBXNativeTarget "IronVaultShare" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				953FAC673074AA60001037F0 /* Debug configuration for PBXNativeTarget "IronVaultShare" */,
-				953FAC683074AA60001037F0 /* Release configuration for PBXNativeTarget "IronVaultShare" */,
 			);
 			defaultConfigurationName = Release;
 		};
