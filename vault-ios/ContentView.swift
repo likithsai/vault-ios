@@ -67,6 +67,9 @@ struct ContentView: View {
     @State private var isShowingRekeySheet = false
     @State private var newRekeyPasswordBuffer = ""
 
+    // Settings Modal
+    @State private var isShowingSettingsSheet = false
+
     // Item Management Modals
     @State private var isCreatingFolder = false
     @State private var newFolderNameBuffer = ""
@@ -156,6 +159,19 @@ struct ContentView: View {
                         }
                     }
                 } else {
+                    // Leading Settings Button on Initial Screen
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button {
+                            isShowingSettingsSheet = true
+                        } label: {
+                            Image(systemName: "gearshape")
+                                .font(.system(size: 16, weight: .medium))
+                                .foregroundStyle(Color.accentColor)
+                                .frame(width: 36, height: 36)
+                                .contentShape(Rectangle())
+                        }
+                    }
+
                     // Trailing Action Menu for Vault Selection Screen
                     ToolbarItem(placement: .topBarTrailing) {
                         Menu {
@@ -215,6 +231,11 @@ struct ContentView: View {
                 handleFolderImports(result)
             }
             // Modals
+            .sheet(isPresented: $isShowingSettingsSheet) {
+                settingsModalSheet
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+            }
             .sheet(isPresented: $isPresentingUnlockSheet) {
                 authenticationModalSheet
                     .presentationDetents([.fraction(0.40)])
@@ -671,6 +692,72 @@ struct ContentView: View {
     }
 
     // MARK: - Sheet Modals
+
+    private var settingsModalSheet: some View {
+        NavigationStack {
+            Form {
+                Section("Security & Biometrics") {
+                    HStack {
+                        Label("Biometric Hardware", systemImage: "faceid")
+                        Spacer()
+                        Text(manager.isBiometricsAvailable ? "Available" : "Unavailable")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Button(role: .destructive) {
+                        for vault in manager.availableVaults {
+                            let account = vault.path
+                            let query: [String: Any] = [
+                                kSecClass as String: kSecClassGenericPassword,
+                                kSecAttrService as String: "com.likithsai.vaultios.master",
+                                kSecAttrAccount as String: account
+                            ]
+                            SecItemDelete(query as CFDictionary)
+                        }
+                    } label: {
+                        Label("Clear Saved Biometric Passwords", systemImage: "key.slash")
+                    }
+                }
+
+                Section("Temporary Cache & Storage") {
+                    Button(role: .destructive) {
+                        let tmp = FileManager.default.temporaryDirectory
+                        if let files = try? FileManager.default.contentsOfDirectory(at: tmp, includingPropertiesForKeys: nil) {
+                            for f in files {
+                                try? FileManager.default.removeItem(at: f)
+                            }
+                        }
+                    } label: {
+                        Label("Clear QuickLook Cache", systemImage: "trash")
+                    }
+                }
+
+                Section("Cryptographic Engine") {
+                    LabeledContent("Algorithm", value: "AES-256-GCM")
+                    LabeledContent("Key Derivation", value: "Argon2id v1.3")
+                    LabeledContent("Iterations / Memory", value: "3 passes / 64 MB")
+                    LabeledContent("Integrity Validation", value: "SHA-256 Digest")
+                    LabeledContent("Format", value: "Virtual Chunk Container (.ivault)")
+                }
+
+                Section("Application") {
+                    LabeledContent("App Name", value: "IronVault")
+                    LabeledContent("Version", value: "1.0.0")
+                    LabeledContent("Build Target", value: "iOS Native (SwiftUI)")
+                }
+            }
+            .navigationTitle("Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        isShowingSettingsSheet = false
+                    }
+                }
+            }
+        }
+    }
 
     private var authenticationModalSheet: some View {
         NavigationStack {
