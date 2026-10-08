@@ -10,7 +10,6 @@ enum CryptoVaultError: LocalizedError {
     case encryptionFailed
     case decryptionFailed
     case checksumMismatch(expected: String, actual: String)
-    case emptyPassword
 
     var errorDescription: String? {
         switch self {
@@ -24,8 +23,6 @@ enum CryptoVaultError: LocalizedError {
             return "Authentication failed or incorrect password."
         case .checksumMismatch(let exp, let act):
             return "Integrity check failed! Expected: \(exp.prefix(8))..., Got: \(act.prefix(8))..."
-        case .emptyPassword:
-            return "Master password cannot be empty."
         }
     }
 }
@@ -38,12 +35,13 @@ final class VaultCrypto {
     static let tagLength = 16
 
     static func deriveKey(password: String, salt: Data) throws -> SymmetricKey {
-        guard !password.isEmpty else { throw CryptoVaultError.emptyPassword }
         guard salt.count == saltLength else { throw CryptoVaultError.payloadTooShort }
 
+        // Use a standard internal fallback string for empty passwords to satisfy Argon2
+        let effectivePassword = password.isEmpty ? "IRONVAULT_NOPASSWORD_SENTINEL" : password
         let saltObj = Salt(bytes: salt)
         let result = try Argon2Swift.hashPasswordString(
-            password: password,
+            password: effectivePassword,
             salt: saltObj,
             iterations: 3,
             memory: 64 * 1024,

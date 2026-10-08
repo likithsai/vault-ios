@@ -76,7 +76,7 @@ final class VaultManager: ObservableObject {
         defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
 
         var storedBookmarks = UserDefaults.standard.array(forKey: savedBookmarksKey) as? [Data] ?? []
-        
+
         do {
             let bookmarkData = try url.bookmarkData(
                 options: .minimalBookmark,
@@ -124,11 +124,44 @@ final class VaultManager: ObservableObject {
         refreshAvailableVaults()
     }
 
+    func renameVault(at index: Int, newName: String) async {
+        guard index < availableVaults.count else { return }
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        let oldURL = availableVaults[index]
+        let cleanName = trimmed.hasSuffix(".ivault") ? trimmed : "\(trimmed).ivault"
+        let newURL = oldURL.deletingLastPathComponent().appendingPathComponent(cleanName)
+
+        guard oldURL != newURL else { return }
+
+        let didAccess = oldURL.startAccessingSecurityScopedResource()
+        defer { if didAccess { oldURL.stopAccessingSecurityScopedResource() } }
+
+        do {
+            try FileManager.default.moveItem(at: oldURL, to: newURL)
+
+            if let savedPassword = readPasswordFromKeychain(for: oldURL) {
+                savePasswordToKeychain(password: savedPassword, vaultURL: newURL)
+                let oldQuery: [String: Any] = [
+                    kSecClass as String: kSecClassGenericPassword,
+                    kSecAttrService as String: keychainService,
+                    kSecAttrAccount as String: oldURL.path
+                ]
+                SecItemDelete(oldQuery as CFDictionary)
+            }
+
+            removeVaultFromList(at: index)
+            recordVault(at: newURL)
+        } catch {
+            self.activeError = "Rename failed: \(error.localizedDescription)"
+        }
+    }
+
     func refreshAvailableVaults() {
         var resolvedVaults: [URL] = []
         let fileManager = FileManager.default
 
-        // 1. Resolve stored bookmarks
         let storedBookmarks = UserDefaults.standard.array(forKey: savedBookmarksKey) as? [Data] ?? []
         for bookmarkData in storedBookmarks {
             var isStale = false
@@ -144,7 +177,6 @@ final class VaultManager: ObservableObject {
             }
         }
 
-        // 2. Discover local sandbox vaults in App Documents
         if let docs = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first,
            let contents = try? fileManager.contentsOfDirectory(at: docs, includingPropertiesForKeys: nil) {
             let localVaults = contents.filter { $0.pathExtension == "ivault" }
@@ -160,15 +192,56 @@ final class VaultManager: ObservableObject {
 
     // MARK: - Unlock & Open
 
+    func tryUnlockPasswordless(at fileURL: URL) async -> Bool {
+        let didAccess = fileURL.startAccessingSecurityScopedResource()
+        defer { if didAccess { fileURL.stopAccessingSecurityScopedResource() } }
+
+        do {
+            let handle = try FileHandle(forReadingFrom: fileURL)
+            defer { try? handle.close() }
+
+            guard let headerData = try handle.read(upToCount: Int(Self.headerSize)),
+                  headerData.count == Int(Self.headerSize) else { return false }
+
+            let magic = headerData.prefix(4)
+            guard magic == Self.magicHeader else { return false }
+
+            let salt = headerData.subdata(in: 4..<20)
+            let indexOffset = headerData.subdata(in: 20..<28).withUnsafeBytes { $0.load(as: UInt64.self) }
+            let indexLength = headerData.subdata(in: 28..<36).withUnsafeBytes { $0.load(as: UInt64.self) }
+
+            let derived = try await Task.detached(priority: .userInitiated) {
+                try VaultCrypto.deriveKey(password: "", salt: salt)
+            }.value
+
+            try handle.seek(toOffset: indexOffset)
+            guard let encryptedIndex = try handle.read(upToCount: Int(indexLength)) else { return false }
+
+            let decryptedIndexData = try VaultCrypto.decryptBlock(combinedCiphertext: encryptedIndex, using: derived)
+            let decodedIndex = try JSONDecoder().decode(VaultMetadataIndex.self, from: decryptedIndexData)
+
+            self.masterKey = derived
+            self.cachedSalt = salt
+            self.cachedPassword = ""
+            self.metadata = decodedIndex
+            self.activeVaultURL = fileURL
+            self.rebuildLookupIndex()
+            self.isUnlocked = true
+            self.statusDescription = "Vault unlocked"
+            self.recordVault(at: fileURL)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     func unlockVault(at fileURL: URL, password: String, saveToBiometrics: Bool = false) async {
         isBusy = true
         statusDescription = "Reading container header..."
         activeError = nil
 
         let didAccess = fileURL.startAccessingSecurityScopedResource()
-        defer {
-            if didAccess { fileURL.stopAccessingSecurityScopedResource() }
-        }
+        defer { if didAccess { fileURL.stopAccessingSecurityScopedResource() } }
 
         do {
             let handle = try FileHandle(forReadingFrom: fileURL)
@@ -196,7 +269,7 @@ final class VaultManager: ObservableObject {
                 throw CryptoVaultError.payloadTooShort
             }
 
-            self.statusDescription = "Decrypting table of contents..."
+            self.statusDescription = "Decrypting index..."
             let decryptedIndexData = try VaultCrypto.decryptBlock(combinedCiphertext: encryptedIndex, using: derived)
             let decodedIndex = try JSONDecoder().decode(VaultMetadataIndex.self, from: decryptedIndexData)
 
@@ -211,7 +284,7 @@ final class VaultManager: ObservableObject {
 
             self.recordVault(at: fileURL)
 
-            if saveToBiometrics {
+            if saveToBiometrics && !password.isEmpty {
                 savePasswordToKeychain(password: password, vaultURL: fileURL)
             }
         } catch {
@@ -227,9 +300,7 @@ final class VaultManager: ObservableObject {
         activeError = nil
 
         let didAccess = targetURL.startAccessingSecurityScopedResource()
-        defer {
-            if didAccess { targetURL.stopAccessingSecurityScopedResource() }
-        }
+        defer { if didAccess { targetURL.stopAccessingSecurityScopedResource() } }
 
         do {
             var salt = Data(count: VaultCrypto.saltLength)
@@ -265,11 +336,11 @@ final class VaultManager: ObservableObject {
             self.activeVaultURL = targetURL
             self.rebuildLookupIndex()
             self.isUnlocked = true
-            self.statusDescription = "Container initialized"
+            self.statusDescription = password.isEmpty ? "Unprotected Vault Created" : "Container initialized"
 
             self.recordVault(at: targetURL)
 
-            if saveToBiometrics {
+            if saveToBiometrics && !password.isEmpty {
                 savePasswordToKeychain(password: password, vaultURL: targetURL)
             }
         } catch {
@@ -279,62 +350,64 @@ final class VaultManager: ObservableObject {
         isBusy = false
     }
 
-    // MARK: - Append File In-Place
+    // MARK: - Append File In-Place (Optimized Task Offloading)
 
     func importFile(name: String, sourceURL: URL, folderId: UUID?) async {
         guard let key = masterKey, let vaultURL = activeVaultURL else { return }
         isBusy = true
-        statusDescription = "Hashing & encrypting \(name)..."
+        statusDescription = "Encrypting \(name)..."
 
         let didAccess = vaultURL.startAccessingSecurityScopedResource()
-        defer {
-            if didAccess { vaultURL.stopAccessingSecurityScopedResource() }
-        }
+        defer { if didAccess { vaultURL.stopAccessingSecurityScopedResource() } }
 
         do {
-            let rawData = try Data(contentsOf: sourceURL, options: .alwaysMapped)
-            let checksum = VaultCrypto.computeSHA256(data: rawData)
-            let encryptedBlock = try await Task.detached(priority: .userInitiated) {
-                try VaultCrypto.encryptBlock(plainData: rawData, using: key)
+            let (newHeader, serializedIndex, nextOffset, nextLength) = try await Task.detached(priority: .userInitiated) { () -> (EncryptedFileHeader, Data, UInt64, UInt64) in
+                let rawData = try Data(contentsOf: sourceURL, options: .alwaysMapped)
+                let checksum = VaultCrypto.computeSHA256(data: rawData)
+                let encryptedBlock = try VaultCrypto.encryptBlock(plainData: rawData, using: key)
+
+                let handle = try FileHandle(forUpdating: vaultURL)
+                defer { try? handle.close() }
+
+                try handle.seek(toOffset: 20)
+                guard let offsetData = try handle.read(upToCount: 8) else { throw CryptoVaultError.payloadTooShort }
+                let currentIndexOffset = offsetData.withUnsafeBytes { $0.load(as: UInt64.self) }
+
+                let fileOffset = currentIndexOffset
+                let fileLength = UInt64(encryptedBlock.count)
+
+                try handle.seek(toOffset: fileOffset)
+                try handle.write(contentsOf: encryptedBlock)
+
+                let header = EncryptedFileHeader(
+                    file_name: name,
+                    file_size_bytes: rawData.count,
+                    folder_id: folderId,
+                    block_offset: fileOffset,
+                    block_length: fileLength,
+                    sha256_checksum: checksum
+                )
+
+                var updatedMetadata = await self.metadata
+                updatedMetadata.fileHeaders.append(header)
+                let serialized = try JSONEncoder().encode(updatedMetadata)
+                let encryptedIndex = try VaultCrypto.encryptBlock(plainData: serialized, using: key)
+
+                let nOffset = fileOffset + fileLength
+                let nLength = UInt64(encryptedIndex.count)
+
+                try handle.seek(toOffset: nOffset)
+                try handle.write(contentsOf: encryptedIndex)
+                try handle.truncate(atOffset: nOffset + nLength)
+
+                try handle.seek(toOffset: 20)
+                try handle.write(contentsOf: Data(bytes: [nOffset], count: 8))
+                try handle.write(contentsOf: Data(bytes: [nLength], count: 8))
+
+                return (header, encryptedIndex, nOffset, nLength)
             }.value
 
-            let handle = try FileHandle(forUpdating: vaultURL)
-            defer { try? handle.close() }
-
-            try handle.seek(toOffset: 20)
-            guard let offsetData = try handle.read(upToCount: 8) else { throw CryptoVaultError.payloadTooShort }
-            let currentIndexOffset = offsetData.withUnsafeBytes { $0.load(as: UInt64.self) }
-
-            let newFileOffset = currentIndexOffset
-            let newFileLength = UInt64(encryptedBlock.count)
-
-            try handle.seek(toOffset: newFileOffset)
-            try handle.write(contentsOf: encryptedBlock)
-
-            let header = EncryptedFileHeader(
-                file_name: name,
-                file_size_bytes: rawData.count,
-                folder_id: folderId,
-                block_offset: newFileOffset,
-                block_length: newFileLength,
-                sha256_checksum: checksum
-            )
-            metadata.fileHeaders.append(header)
-
-            let serialized = try JSONEncoder().encode(metadata)
-            let encryptedIndex = try VaultCrypto.encryptBlock(plainData: serialized, using: key)
-
-            var nextIndexOffset = newFileOffset + newFileLength
-            var nextIndexLength = UInt64(encryptedIndex.count)
-
-            try handle.seek(toOffset: nextIndexOffset)
-            try handle.write(contentsOf: encryptedIndex)
-            try handle.truncate(atOffset: nextIndexOffset + nextIndexLength)
-
-            try handle.seek(toOffset: 20)
-            try handle.write(contentsOf: Data(bytes: &nextIndexOffset, count: 8))
-            try handle.write(contentsOf: Data(bytes: &nextIndexLength, count: 8))
-
+            self.metadata.fileHeaders.append(newHeader)
             rebuildLookupIndex()
             self.statusDescription = "Saved"
         } catch {
@@ -343,105 +416,155 @@ final class VaultManager: ObservableObject {
         isBusy = false
     }
 
-    // MARK: - Coordinated Recursive Folder Import
+    // MARK: - Batched Recursive Folder Import (High Throughput)
 
     func importFolderRecursively(from rootFolderURL: URL, parentFolderId: UUID?) async {
+        guard let key = masterKey, let vaultURL = activeVaultURL else { return }
         isBusy = true
-        statusDescription = "Preparing folder import..."
+        statusDescription = "Scanning directory structure..."
 
-        let didAccess = rootFolderURL.startAccessingSecurityScopedResource()
+        let didAccessVault = vaultURL.startAccessingSecurityScopedResource()
+        let didAccessRoot = rootFolderURL.startAccessingSecurityScopedResource()
         defer {
-            if didAccess { rootFolderURL.stopAccessingSecurityScopedResource() }
+            if didAccessVault { vaultURL.stopAccessingSecurityScopedResource() }
+            if didAccessRoot { rootFolderURL.stopAccessingSecurityScopedResource() }
         }
 
-        let rootName = rootFolderURL.lastPathComponent
-        let rootFolderId = UUID()
-        let rootFolder = VaultFolder(id: rootFolderId, name: rootName, parent_id: parentFolderId)
-        metadata.folders.append(rootFolder)
+        do {
+            let rootName = rootFolderURL.lastPathComponent
+            let rootFolderId = UUID()
+            let rootFolder = VaultFolder(id: rootFolderId, name: rootName, parent_id: parentFolderId)
+            self.metadata.folders.append(rootFolder)
 
-        var directoryIdMap: [URL: UUID] = [rootFolderURL.standardizedFileURL: rootFolderId]
+            var directoryIdMap: [URL: UUID] = [rootFolderURL.standardizedFileURL: rootFolderId]
+            let fileManager = FileManager.default
+            let keys: [URLResourceKey] = [.isDirectoryKey, .isRegularFileKey]
 
-        let fileManager = FileManager.default
-        let keys: [URLResourceKey] = [.isDirectoryKey, .isRegularFileKey]
-
-        guard let enumerator = fileManager.enumerator(
-            at: rootFolderURL,
-            includingPropertiesForKeys: keys,
-            options: [.skipsHiddenFiles, .producesRelativePathURLs]
-        ) else {
-            isBusy = false
-            return
-        }
-
-        var pendingFilesToImport: [(name: String, url: URL, folderId: UUID)] = []
-
-        while let itemURL = enumerator.nextObject() as? URL {
-            let fullURL = itemURL.standardizedFileURL
-            guard let values = try? fullURL.resourceValues(forKeys: Set(keys)) else { continue }
-
-            let parentURL = fullURL.deletingLastPathComponent().standardizedFileURL
-            let assignedParentId = directoryIdMap[parentURL] ?? rootFolderId
-
-            if values.isDirectory == true {
-                let newSubId = UUID()
-                let subFolder = VaultFolder(id: newSubId, name: fullURL.lastPathComponent, parent_id: assignedParentId)
-                metadata.folders.append(subFolder)
-                directoryIdMap[fullURL] = newSubId
-            } else if values.isRegularFile == true {
-                pendingFilesToImport.append((fullURL.lastPathComponent, fullURL, assignedParentId))
+            guard let enumerator = fileManager.enumerator(
+                at: rootFolderURL,
+                includingPropertiesForKeys: keys,
+                options: [.skipsHiddenFiles, .producesRelativePathURLs]
+            ) else {
+                isBusy = false
+                return
             }
-        }
 
-        var count = 0
-        for item in pendingFilesToImport {
-            count += 1
-            statusDescription = "Importing \(count)/\(pendingFilesToImport.count): \(item.name)..."
-            await importFile(name: item.name, sourceURL: item.url, folderId: item.folderId)
-        }
+            var pendingFiles: [(name: String, url: URL, folderId: UUID)] = []
 
-        rebuildLookupIndex()
-        await persistIndexOnly()
+            while let itemURL = enumerator.nextObject() as? URL {
+                let fullURL = itemURL.standardizedFileURL
+                guard let values = try? fullURL.resourceValues(forKeys: Set(keys)) else { continue }
+
+                let parentURL = fullURL.deletingLastPathComponent().standardizedFileURL
+                let assignedParentId = directoryIdMap[parentURL] ?? rootFolderId
+
+                if values.isDirectory == true {
+                    let newSubId = UUID()
+                    let subFolder = VaultFolder(id: newSubId, name: fullURL.lastPathComponent, parent_id: assignedParentId)
+                    self.metadata.folders.append(subFolder)
+                    directoryIdMap[fullURL] = newSubId
+                } else if values.isRegularFile == true {
+                    pendingFiles.append((fullURL.lastPathComponent, fullURL, assignedParentId))
+                }
+            }
+
+            // Batch stream encrypted blocks into the container handle
+            let handle = try FileHandle(forUpdating: vaultURL)
+            defer { try? handle.close() }
+
+            try handle.seek(toOffset: 20)
+            guard let offsetData = try handle.read(upToCount: 8) else { throw CryptoVaultError.payloadTooShort }
+            var currentWriteOffset = offsetData.withUnsafeBytes { $0.load(as: UInt64.self) }
+
+            var newHeaders: [EncryptedFileHeader] = []
+            var count = 0
+
+            for item in pendingFiles {
+                count += 1
+                self.statusDescription = "Encrypting (\(count)/\(pendingFiles.count)): \(item.name)"
+
+                let (header, block) = try await Task.detached(priority: .userInitiated) { () -> (EncryptedFileHeader, Data) in
+                    let rawData = try Data(contentsOf: item.url, options: .alwaysMapped)
+                    let checksum = VaultCrypto.computeSHA256(data: rawData)
+                    let encrypted = try VaultCrypto.encryptBlock(plainData: rawData, using: key)
+                    let header = EncryptedFileHeader(
+                        file_name: item.name,
+                        file_size_bytes: rawData.count,
+                        folder_id: item.folderId,
+                        block_offset: currentWriteOffset,
+                        block_length: UInt64(encrypted.count),
+                        sha256_checksum: checksum
+                    )
+                    return (header, encrypted)
+                }.value
+
+                try handle.seek(toOffset: currentWriteOffset)
+                try handle.write(contentsOf: block)
+                currentWriteOffset += header.block_length
+                newHeaders.append(header)
+            }
+
+            self.metadata.fileHeaders.append(contentsOf: newHeaders)
+
+            // Finalize index once for all imported files
+            self.statusDescription = "Finalizing table of contents..."
+            let serialized = try JSONEncoder().encode(self.metadata)
+            let encryptedIndex = try VaultCrypto.encryptBlock(plainData: serialized, using: key)
+
+            var finalIndexOffset = currentWriteOffset
+            var finalIndexLength = UInt64(encryptedIndex.count)
+
+            try handle.seek(toOffset: finalIndexOffset)
+            try handle.write(contentsOf: encryptedIndex)
+            try handle.truncate(atOffset: finalIndexOffset + finalIndexLength)
+
+            try handle.seek(toOffset: 20)
+            try handle.write(contentsOf: Data(bytes: &finalIndexOffset, count: 8))
+            try handle.write(contentsOf: Data(bytes: &finalIndexLength, count: 8))
+
+            rebuildLookupIndex()
+            self.statusDescription = "Batch import complete"
+        } catch {
+            self.activeError = "Folder import failed: \(error.localizedDescription)"
+        }
         isBusy = false
-        statusDescription = "Folder import complete"
     }
 
-    // MARK: - Lazy Chunk Decryption & Verification
+    // MARK: - Lazy Chunk Decryption & Verification (Offloaded)
 
-    func readAndDecryptPayload(for file: EncryptedFileHeader) throws -> Data {
+    func readAndDecryptPayload(for file: EncryptedFileHeader) async throws -> Data {
         guard let key = masterKey, let vaultURL = activeVaultURL else { throw CryptoVaultError.decryptionFailed }
 
         let didAccess = vaultURL.startAccessingSecurityScopedResource()
-        defer {
-            if didAccess { vaultURL.stopAccessingSecurityScopedResource() }
-        }
+        defer { if didAccess { vaultURL.stopAccessingSecurityScopedResource() } }
 
-        let handle = try FileHandle(forReadingFrom: vaultURL)
-        defer { try? handle.close() }
+        return try await Task.detached(priority: .userInitiated) {
+            let handle = try FileHandle(forReadingFrom: vaultURL)
+            defer { try? handle.close() }
 
-        try handle.seek(toOffset: file.block_offset)
-        guard let encryptedBlock = try handle.read(upToCount: Int(file.block_length)) else {
-            throw CryptoVaultError.payloadTooShort
-        }
-
-        let decrypted = try VaultCrypto.decryptBlock(combinedCiphertext: encryptedBlock, using: key)
-
-        if !file.sha256_checksum.isEmpty {
-            let actualHash = VaultCrypto.computeSHA256(data: decrypted)
-            if actualHash.lowercased() != file.sha256_checksum.lowercased() {
-                throw CryptoVaultError.checksumMismatch(expected: file.sha256_checksum, actual: actualHash)
+            try handle.seek(toOffset: file.block_offset)
+            guard let encryptedBlock = try handle.read(upToCount: Int(file.block_length)) else {
+                throw CryptoVaultError.payloadTooShort
             }
-        }
 
-        return decrypted
+            let decrypted = try VaultCrypto.decryptBlock(combinedCiphertext: encryptedBlock, using: key)
+
+            if !file.sha256_checksum.isEmpty {
+                let actualHash = VaultCrypto.computeSHA256(data: decrypted)
+                if actualHash.lowercased() != file.sha256_checksum.lowercased() {
+                    throw CryptoVaultError.checksumMismatch(expected: file.sha256_checksum, actual: actualHash)
+                }
+            }
+
+            return decrypted
+        }.value
     }
 
     private func persistIndexOnly() async {
         guard let key = masterKey, let vaultURL = activeVaultURL else { return }
 
         let didAccess = vaultURL.startAccessingSecurityScopedResource()
-        defer {
-            if didAccess { vaultURL.stopAccessingSecurityScopedResource() }
-        }
+        defer { if didAccess { vaultURL.stopAccessingSecurityScopedResource() } }
 
         do {
             let serialized = try JSONEncoder().encode(metadata)
@@ -620,7 +743,9 @@ final class VaultManager: ObservableObject {
             self.cachedPassword = newPassword
             self.metadata = newMetadata
             self.rebuildLookupIndex()
-            savePasswordToKeychain(password: newPassword, vaultURL: vaultURL)
+            if !newPassword.isEmpty {
+                savePasswordToKeychain(password: newPassword, vaultURL: vaultURL)
+            }
             self.recordVault(at: vaultURL)
             self.statusDescription = "Container rekeyed"
         } catch {
