@@ -81,20 +81,103 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                Color(uiColor: .systemGroupedBackground)
+                Color(uiColor: .systemBackground)
                     .ignoresSafeArea()
 
                 if manager.isUnlocked {
                     mainVaultContent
                 } else {
-                    welcomeHeroLanding
+                    initialVaultsList
                 }
             }
-            .navigationTitle(navigationStackPath.last?.name ?? "Vault")
+            .navigationTitle(manager.isUnlocked ? (navigationStackPath.last?.name ?? "Vault") : "IronVault")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 if manager.isUnlocked {
-                    vaultNavigationToolbar
+                    // Leading Back / Close Button
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button {
+                            withAnimation(.snappy(duration: 0.2)) {
+                                currentFolderId = nil
+                                navigationStackPath = [(nil, "Vault")]
+                                searchFilter = ""
+                                manager.lockVault()
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "chevron.left")
+                                    .font(.system(size: 14, weight: .bold))
+                                Text("Vaults")
+                                    .font(.system(size: 16))
+                            }
+                            .foregroundStyle(Color.accentColor)
+                        }
+                    }
+
+                    // Trailing Action Menu for Opened Vault
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Menu {
+                            Section("Add Content") {
+                                Button {
+                                    isCreatingFolder = true
+                                } label: {
+                                    Label("New Folder", systemImage: "folder.badge.plus")
+                                }
+                                Button {
+                                    isFolderPickerOpen = true
+                                } label: {
+                                    Label("Import Folder...", systemImage: "folder.badge.gearshape")
+                                }
+                                Button {
+                                    isDocumentPickerOpen = true
+                                } label: {
+                                    Label("Import Files...", systemImage: "doc.badge.plus")
+                                }
+                            }
+
+                            Section("Security & Storage") {
+                                Button {
+                                    isShowingVaultInfo = true
+                                } label: {
+                                    Label("Vault Properties", systemImage: "info.circle")
+                                }
+                                Button {
+                                    isShowingRekeySheet = true
+                                } label: {
+                                    Label("Change Password", systemImage: "key.fill")
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "plus")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(Color.accentColor)
+                                .frame(width: 36, height: 36)
+                                .contentShape(Rectangle())
+                        }
+                    }
+                } else {
+                    // Trailing Action Menu for Vault Selection Screen
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Menu {
+                            Button {
+                                isVaultSaverOpen = true
+                            } label: {
+                                Label("Create New Vault", systemImage: "plus.square.fill")
+                            }
+
+                            Button {
+                                isVaultPickerOpen = true
+                            } label: {
+                                Label("Open Vault from Files...", systemImage: "folder.badge.gearshape")
+                            }
+                        } label: {
+                            Image(systemName: "plus")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(Color.accentColor)
+                                .frame(width: 36, height: 36)
+                                .contentShape(Rectangle())
+                        }
+                    }
                 }
             }
             // System Importers / Exporters
@@ -163,6 +246,7 @@ struct ContentView: View {
             // Creation & Rename Alerts
             .alert("New Folder", isPresented: $isCreatingFolder) {
                 TextField("Folder Name", text: $newFolderNameBuffer)
+                    .multilineTextAlignment(.center)
                 Button("Create") {
                     let name = newFolderNameBuffer.trimmingCharacters(in: .whitespaces)
                     if !name.isEmpty {
@@ -179,6 +263,7 @@ struct ContentView: View {
                 set: { if !$0 { renamingItem = nil } }
             )) {
                 TextField("New Name", text: $updatedNameBuffer)
+                    .multilineTextAlignment(.center)
                 Button("Save") {
                     if let item = renamingItem, !updatedNameBuffer.trimmingCharacters(in: .whitespaces).isEmpty {
                         let newName = updatedNameBuffer.trimmingCharacters(in: .whitespaces)
@@ -207,6 +292,83 @@ struct ContentView: View {
         }
     }
 
+    // MARK: - Initial Vaults List (Entire Screen Plain List)
+
+    private var initialVaultsList: some View {
+        Group {
+            if manager.availableVaults.isEmpty {
+                VStack {
+                    Spacer()
+                    ContentUnavailableView {
+                        Label("No Saved Vaults", systemImage: "lock.shield")
+                    } description: {
+                        Text("Tap the plus button (+) in the top right to create a new vault or open an existing one from Files.")
+                    }
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(uiColor: .systemBackground))
+            } else {
+                List {
+                    ForEach(Array(manager.availableVaults.enumerated()), id: \.element) { index, vaultURL in
+                        Button {
+                            pendingTargetURL = vaultURL
+                            isCreatingVault = false
+                            authenticateAndUnlock(vaultURL)
+                        } label: {
+                            HStack(spacing: 14) {
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .fill(Color.accentColor.opacity(0.12))
+                                        .frame(width: 44, height: 44)
+                                    Image(systemName: "lock.shield.fill")
+                                        .font(.system(size: 20, weight: .semibold))
+                                        .foregroundStyle(Color.accentColor)
+                                }
+
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(vaultURL.deletingPathExtension().lastPathComponent)
+                                        .font(.system(size: 16, weight: .semibold))
+                                        .foregroundStyle(Color.primary)
+
+                                    if let attrs = try? FileManager.default.attributesOfItem(atPath: vaultURL.path),
+                                       let size = attrs[.size] as? Int64 {
+                                        Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
+                                            .font(.system(size: 13))
+                                            .foregroundStyle(.secondary)
+                                    } else {
+                                        Text(vaultURL.lastPathComponent)
+                                            .font(.system(size: 13))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+
+                                Spacer()
+
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .padding(.vertical, 4)
+                        }
+                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            Button(role: .destructive) {
+                                manager.removeVaultFromList(at: index)
+                            } label: {
+                                Label("Remove", systemImage: "trash")
+                            }
+                        }
+                    }
+                }
+                .listStyle(.plain)
+                .refreshable {
+                    manager.refreshAvailableVaults()
+                }
+            }
+        }
+    }
+
     // MARK: - Main Content Layout
 
     private var mainVaultContent: some View {
@@ -221,7 +383,7 @@ struct ContentView: View {
         .searchable(
             text: $searchFilter,
             placement: .navigationBarDrawer(displayMode: .automatic),
-            prompt: "Search vault files and folders"
+            prompt: "Search files and folders"
         )
     }
 
@@ -277,58 +439,13 @@ struct ContentView: View {
                 }
             }
         }
-        .background(Color(uiColor: .secondarySystemGroupedBackground))
+        .background(Color(uiColor: .secondarySystemBackground))
         .overlay(alignment: .bottom) {
             Divider()
         }
     }
 
-    // MARK: - Native Toolbar
-
-    @ToolbarContentBuilder
-    private var vaultNavigationToolbar: some ToolbarContent {
-        ToolbarItem(placement: .topBarTrailing) {
-            Menu {
-                Section("Add Content") {
-                    Button {
-                        isCreatingFolder = true
-                    } label: {
-                        Label("New Folder", systemImage: "folder.badge.plus")
-                    }
-                    Button {
-                        isFolderPickerOpen = true
-                    } label: {
-                        Label("Import Folder...", systemImage: "folder.badge.gearshape")
-                    }
-                    Button {
-                        isDocumentPickerOpen = true
-                    } label: {
-                        Label("Import Files...", systemImage: "doc.badge.plus")
-                    }
-                }
-
-                Section("Security & Storage") {
-                    Button {
-                        isShowingVaultInfo = true
-                    } label: {
-                        Label("Vault Properties", systemImage: "info.circle")
-                    }
-                    Button {
-                        isShowingRekeySheet = true
-                    } label: {
-                        Label("Change Password", systemImage: "key.fill")
-                    }
-                }
-            } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(Color.accentColor)
-                    .padding(4)
-            }
-        }
-    }
-
-    // MARK: - Unified Single List
+    // MARK: - Unified Single List (Entire Screen Plain List)
 
     private var activeUnifiedList: some View {
         let isSearching = !searchFilter.trimmingCharacters(in: .whitespaces).isEmpty
@@ -345,48 +462,71 @@ struct ContentView: View {
         items.append(contentsOf: matchingFolders.map { UnifiedVaultItem.from(folder: $0) })
         items.append(contentsOf: matchingFiles.map { UnifiedVaultItem.from(file: $0) })
 
-        return List {
+        return Group {
             if items.isEmpty {
                 emptyDirectoryStateView(isSearching: isSearching)
-                    .listRowBackground(Color.clear)
-                    .listRowSeparator(.hidden)
             } else {
-                ForEach(items) { item in
-                    switch item.type {
-                    case .folder(let folder):
-                        folderRowView(folder)
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                withAnimation(.snappy(duration: 0.2)) {
-                                    currentFolderId = folder.id
-                                    navigationStackPath.append((folder.id, folder.name))
-                                    searchFilter = ""
+                List {
+                    ForEach(items) { item in
+                        switch item.type {
+                        case .folder(let folder):
+                            folderRowView(folder)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    withAnimation(.snappy(duration: 0.2)) {
+                                        currentFolderId = folder.id
+                                        navigationStackPath.append((folder.id, folder.name))
+                                        searchFilter = ""
+                                    }
                                 }
-                            }
-                            .contextMenu {
-                                itemContextMenu(name: folder.name, id: folder.id, isFolder: true, fileHeader: nil)
-                            }
-                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                itemTrailingSwipeActions(name: folder.name, id: folder.id, isFolder: true, fileHeader: nil)
-                            }
+                                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                                .contextMenu {
+                                    itemContextMenu(name: folder.name, id: folder.id, isFolder: true, fileHeader: nil)
+                                }
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    itemTrailingSwipeActions(name: folder.name, id: folder.id, isFolder: true, fileHeader: nil)
+                                }
 
-                    case .file(let file):
-                        fileRowView(file)
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                exportAndPreview(file: file)
-                            }
-                            .contextMenu {
-                                itemContextMenu(name: file.file_name, id: file.id, isFolder: false, fileHeader: file)
-                            }
-                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                itemTrailingSwipeActions(name: file.file_name, id: file.id, isFolder: false, fileHeader: file)
-                            }
+                        case .file(let file):
+                            fileRowView(file)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    exportAndPreview(file: file)
+                                }
+                                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                                .contextMenu {
+                                    itemContextMenu(name: file.file_name, id: file.id, isFolder: false, fileHeader: file)
+                                }
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    itemTrailingSwipeActions(name: file.file_name, id: file.id, isFolder: false, fileHeader: file)
+                                }
+                        }
                     }
                 }
+                .listStyle(.plain)
             }
         }
-        .listStyle(.insetGrouped)
+    }
+
+    // MARK: - Centered Empty Directory Placeholder
+
+    private func emptyDirectoryStateView(isSearching: Bool) -> some View {
+        VStack {
+            Spacer()
+            ContentUnavailableView {
+                Label(
+                    isSearching ? "No Matching Items" : "Folder Is Empty",
+                    systemImage: isSearching ? "magnifyingglass" : "tray"
+                )
+            } description: {
+                Text(isSearching
+                     ? "Check spelling or search another keyword."
+                     : "Use the plus icon (+) in the toolbar to import files or create folders.")
+            }
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(uiColor: .systemBackground))
     }
 
     // MARK: - Row Views
@@ -396,9 +536,9 @@ struct ContentView: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(Color.blue.opacity(0.12))
-                    .frame(width: 38, height: 38)
+                    .frame(width: 40, height: 40)
                 Image(systemName: "folder.fill")
-                    .font(.system(size: 18, weight: .medium))
+                    .font(.system(size: 19, weight: .medium))
                     .foregroundStyle(.blue)
             }
 
@@ -419,7 +559,7 @@ struct ContentView: View {
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.tertiary)
         }
-        .padding(.vertical, 3)
+        .padding(.vertical, 2)
     }
 
     private func fileRowView(_ file: EncryptedFileHeader) -> some View {
@@ -427,9 +567,9 @@ struct ContentView: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(Color.accentColor.opacity(0.10))
-                    .frame(width: 38, height: 38)
+                    .frame(width: 40, height: 40)
                 Image(systemName: systemGlyph(for: file.file_name))
-                    .font(.system(size: 17, weight: .medium))
+                    .font(.system(size: 18, weight: .medium))
                     .foregroundStyle(Color.accentColor)
             }
 
@@ -457,7 +597,7 @@ struct ContentView: View {
 
             Spacer()
         }
-        .padding(.vertical, 3)
+        .padding(.vertical, 2)
     }
 
     // MARK: - Row Actions (Context Menu & Swipes)
@@ -530,106 +670,6 @@ struct ContentView: View {
         .tint(.orange)
     }
 
-    // MARK: - Empty States
-
-    private func emptyDirectoryStateView(isSearching: Bool) -> some View {
-        ContentUnavailableView {
-            Label(
-                isSearching ? "No Matching Items" : "Folder Is Empty",
-                systemImage: isSearching ? "magnifyingglass" : "tray"
-            )
-        } description: {
-            Text(isSearching
-                 ? "Check spelling or search another keyword."
-                 : "Use the plus icon (+) in the toolbar to import files or create subfolders.")
-        }
-        .padding(.vertical, 40)
-    }
-
-    private var welcomeHeroLanding: some View {
-            List {
-                Section {
-                    if manager.availableVaults.isEmpty {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("No Local Vaults")
-                                .font(.headline)
-                            Text("Create a new encrypted container or open an existing .ivault file from the Files app.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(.vertical, 8)
-                    } else {
-                        ForEach(manager.availableVaults, id: \.self) { vaultURL in
-                            Button {
-                                pendingTargetURL = vaultURL
-                                isCreatingVault = false
-                                authenticateAndUnlock(vaultURL)
-                            } label: {
-                                HStack(spacing: 14) {
-                                    ZStack {
-                                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                            .fill(Color.accentColor.opacity(0.12))
-                                            .frame(width: 40, height: 40)
-                                        Image(systemName: "lock.shield.fill")
-                                            .font(.system(size: 18, weight: .semibold))
-                                            .foregroundStyle(Color.accentColor)
-                                    }
-                                    
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(vaultURL.deletingPathExtension().lastPathComponent)
-                                            .font(.system(size: 16, weight: .semibold))
-                                            .foregroundStyle(Color.primary)
-                                        
-                                        if let attrs = try? FileManager.default.attributesOfItem(atPath: vaultURL.path),
-                                           let size = attrs[.size] as? Int64 {
-                                            Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                        } else {
-                                            Text(vaultURL.lastPathComponent)
-                                                .font(.caption)
-                                                .foregroundStyle(.secondary)
-                                        }
-                                    }
-                                    
-                                    Spacer()
-                                    
-                                    Image(systemName: "chevron.right")
-                                        .font(.system(size: 12, weight: .semibold))
-                                        .foregroundStyle(.tertiary)
-                                }
-                                .padding(.vertical, 4)
-                            }
-                        }
-                    }
-                } header: {
-                    Text("Saved Vaults")
-                }
-
-                Section {
-                    Button {
-                        isVaultSaverOpen = true
-                    } label: {
-                        Label("Create New Vault", systemImage: "plus.square.fill")
-                            .font(.system(size: 15, weight: .medium))
-                    }
-
-                    Button {
-                        isVaultPickerOpen = true
-                    } label: {
-                        Label("Open Vault from Files...", systemImage: "folder.badge.gearshape")
-                            .font(.system(size: 15, weight: .medium))
-                    }
-                } header: {
-                    Text("Options")
-                }
-            }
-            .listStyle(.insetGrouped)
-            .refreshable {
-                manager.refreshAvailableVaults()
-            }
-        }
-
     // MARK: - Sheet Modals
 
     private var authenticationModalSheet: some View {
@@ -638,10 +678,13 @@ struct ContentView: View {
                 Section {
                     SecureField("Enter Master Password", text: $passwordBuffer)
                         .textContentType(.password)
+                        .multilineTextAlignment(.center)
                 } header: {
                     Text(isCreatingVault ? "New Master Password" : "Authentication")
                 } footer: {
                     Text("Key derivation uses Argon2id with 64 MB memory clamping.")
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
                 }
 
                 if manager.isBiometricsAvailable {
@@ -726,8 +769,11 @@ struct ContentView: View {
                 Section {
                     SecureField("New Master Password", text: $newRekeyPasswordBuffer)
                         .textContentType(.newPassword)
+                        .multilineTextAlignment(.center)
                 } footer: {
                     Text("All stored file blocks will be atomically re-encrypted using a new Argon2id salt and key.")
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
                 }
 
                 Section {
@@ -862,6 +908,25 @@ struct ContentView: View {
 
     // MARK: - Handlers
 
+    private func authenticateAndUnlock(_ vaultURL: URL) {
+        if manager.isBiometricsAvailable, let savedPwd = manager.readPasswordFromKeychain(for: vaultURL) {
+            Task {
+                let success = await manager.evaluateBiometricPrompt()
+                if success {
+                    await manager.unlockVault(at: vaultURL, password: savedPwd)
+                } else {
+                    await MainActor.run {
+                        self.passwordBuffer = ""
+                        self.isPresentingUnlockSheet = true
+                    }
+                }
+            }
+        } else {
+            self.passwordBuffer = ""
+            self.isPresentingUnlockSheet = true
+        }
+    }
+
     private func exportAndPreview(file: EncryptedFileHeader) {
         Task {
             do {
@@ -908,25 +973,7 @@ struct ContentView: View {
         if case .success(let urls) = result, let selected = urls.first {
             pendingTargetURL = selected
             isCreatingVault = false
-
-            if manager.isBiometricsAvailable, let savedPwd = manager.readPasswordFromKeychain(for: selected) {
-                Task {
-                    let success = await manager.evaluateBiometricPrompt()
-                    if success {
-                        await manager.unlockVault(at: selected, password: savedPwd)
-                    } else {
-                        await MainActor.run {
-                            self.passwordBuffer = ""
-                            self.isPresentingUnlockSheet = true
-                        }
-                    }
-                }
-            } else {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                    self.passwordBuffer = ""
-                    self.isPresentingUnlockSheet = true
-                }
-            }
+            authenticateAndUnlock(selected)
         }
     }
 
@@ -942,25 +989,6 @@ struct ContentView: View {
         default: return "doc.fill"
         }
     }
-    
-    private func authenticateAndUnlock(_ vaultURL: URL) {
-            if manager.isBiometricsAvailable, let savedPwd = manager.readPasswordFromKeychain(for: vaultURL) {
-                Task {
-                    let success = await manager.evaluateBiometricPrompt()
-                    if success {
-                        await manager.unlockVault(at: vaultURL, password: savedPwd)
-                    } else {
-                        await MainActor.run {
-                            self.passwordBuffer = ""
-                            self.isPresentingUnlockSheet = true
-                        }
-                    }
-                }
-            } else {
-                self.passwordBuffer = ""
-                self.isPresentingUnlockSheet = true
-            }
-        }
 }
 
 // MARK: - Supporting Helpers

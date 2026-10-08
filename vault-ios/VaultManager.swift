@@ -16,11 +16,14 @@ final class VaultManager: ObservableObject {
 
     @Published private(set) var filesByFolder: [UUID?: [EncryptedFileHeader]] = [:]
     @Published private(set) var subfoldersByParent: [UUID?: [VaultFolder]] = [:]
+    @Published var availableVaults: [URL] = []
 
     private var masterKey: SymmetricKey? = nil
     private var cachedSalt: Data? = nil
     private var cachedPassword: String? = nil
+
     private let keychainService = "com.likithsai.vaultios.master"
+    private let savedBookmarksKey = "com.likithsai.ironvault.savedVaultBookmarks"
 
     private static let magicHeader = "IVLT".data(using: .utf8)!
     private static let headerSize: UInt64 = 40
@@ -64,6 +67,95 @@ final class VaultManager: ObservableObject {
             dirMap[folder.parent_id, default: []].append(folder)
         }
         self.subfoldersByParent = dirMap
+    }
+
+    // MARK: - Persistent Vault List Management
+
+    func recordVault(at url: URL) {
+        let didAccess = url.startAccessingSecurityScopedResource()
+        defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
+
+        var storedBookmarks = UserDefaults.standard.array(forKey: savedBookmarksKey) as? [Data] ?? []
+        
+        do {
+            let bookmarkData = try url.bookmarkData(
+                options: .minimalBookmark,
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            )
+
+            let urlStandard = url.standardizedFileURL.path
+            var alreadyExists = false
+            for data in storedBookmarks {
+                var isStale = false
+                if let resolved = try? URL(resolvingBookmarkData: data, bookmarkDataIsStale: &isStale),
+                   resolved.standardizedFileURL.path == urlStandard {
+                    alreadyExists = true
+                    break
+                }
+            }
+
+            if !alreadyExists {
+                storedBookmarks.append(bookmarkData)
+                UserDefaults.standard.set(storedBookmarks, forKey: savedBookmarksKey)
+            }
+        } catch {
+            print("Failed to record bookmark: \(error.localizedDescription)")
+        }
+
+        refreshAvailableVaults()
+    }
+
+    func removeVaultFromList(at index: Int) {
+        var storedBookmarks = UserDefaults.standard.array(forKey: savedBookmarksKey) as? [Data] ?? []
+        guard index < availableVaults.count else { return }
+        let targetURL = availableVaults[index]
+
+        storedBookmarks.removeAll { data in
+            var isStale = false
+            if let resolved = try? URL(resolvingBookmarkData: data, bookmarkDataIsStale: &isStale),
+               resolved.standardizedFileURL.path == targetURL.standardizedFileURL.path {
+                return true
+            }
+            return false
+        }
+
+        UserDefaults.standard.set(storedBookmarks, forKey: savedBookmarksKey)
+        refreshAvailableVaults()
+    }
+
+    func refreshAvailableVaults() {
+        var resolvedVaults: [URL] = []
+        let fileManager = FileManager.default
+
+        // 1. Resolve stored bookmarks
+        let storedBookmarks = UserDefaults.standard.array(forKey: savedBookmarksKey) as? [Data] ?? []
+        for bookmarkData in storedBookmarks {
+            var isStale = false
+            if let resolvedURL = try? URL(
+                resolvingBookmarkData: bookmarkData,
+                options: .withoutUI,
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            ) {
+                if !resolvedVaults.contains(where: { $0.standardizedFileURL.path == resolvedURL.standardizedFileURL.path }) {
+                    resolvedVaults.append(resolvedURL)
+                }
+            }
+        }
+
+        // 2. Discover local sandbox vaults in App Documents
+        if let docs = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first,
+           let contents = try? fileManager.contentsOfDirectory(at: docs, includingPropertiesForKeys: nil) {
+            let localVaults = contents.filter { $0.pathExtension == "ivault" }
+            for local in localVaults {
+                if !resolvedVaults.contains(where: { $0.standardizedFileURL.path == local.standardizedFileURL.path }) {
+                    resolvedVaults.append(local)
+                }
+            }
+        }
+
+        self.availableVaults = resolvedVaults
     }
 
     // MARK: - Unlock & Open
@@ -116,6 +208,8 @@ final class VaultManager: ObservableObject {
             self.rebuildLookupIndex()
             self.isUnlocked = true
             self.statusDescription = "Vault unlocked"
+
+            self.recordVault(at: fileURL)
 
             if saveToBiometrics {
                 savePasswordToKeychain(password: password, vaultURL: fileURL)
@@ -172,6 +266,8 @@ final class VaultManager: ObservableObject {
             self.rebuildLookupIndex()
             self.isUnlocked = true
             self.statusDescription = "Container initialized"
+
+            self.recordVault(at: targetURL)
 
             if saveToBiometrics {
                 savePasswordToKeychain(password: password, vaultURL: targetURL)
@@ -525,6 +621,7 @@ final class VaultManager: ObservableObject {
             self.metadata = newMetadata
             self.rebuildLookupIndex()
             savePasswordToKeychain(password: newPassword, vaultURL: vaultURL)
+            self.recordVault(at: vaultURL)
             self.statusDescription = "Container rekeyed"
         } catch {
             self.activeError = "Rekey error: \(error.localizedDescription)"
@@ -542,6 +639,7 @@ final class VaultManager: ObservableObject {
         self.activeVaultURL = nil
         self.isUnlocked = false
         self.statusDescription = "Locked"
+        self.refreshAvailableVaults()
     }
 
     private func savePasswordToKeychain(password: String, vaultURL: URL) {
@@ -571,28 +669,5 @@ final class VaultManager: ObservableObject {
         let status = SecItemCopyMatching(query as CFDictionary, &item)
         guard status == errSecSuccess, let data = item as? Data else { return nil }
         return String(data: data, encoding: .utf8)
-    }
-    
-    // MARK: - Known Vaults Tracking
-
-    @Published var availableVaults: [URL] = []
-
-    func refreshAvailableVaults() {
-        let fileManager = FileManager.default
-        var discovered: [URL] = []
-        
-        // 1. Documents directory (internal vaults)
-        if let docs = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first {
-            if let contents = try? fileManager.contentsOfDirectory(at: docs, includingPropertiesForKeys: nil) {
-                discovered.append(contentsOf: contents.filter { $0.pathExtension == "ivault" })
-            }
-        }
-        
-        // 2. Add last used vault if not already in list
-        if let lastVault = activeVaultURL, !discovered.contains(lastVault) {
-            discovered.append(lastVault)
-        }
-        
-        self.availableVaults = discovered
     }
 }
