@@ -2,6 +2,8 @@ import Foundation
 import CryptoKit
 import Argon2Swift
 
+// MARK: - Cryptographic Errors
+
 enum CryptoVaultError: LocalizedError {
     case payloadTooShort
     case keyDerivationFailed
@@ -21,12 +23,14 @@ enum CryptoVaultError: LocalizedError {
         case .decryptionFailed:
             return "Authentication failed or incorrect password."
         case .checksumMismatch(let exp, let act):
-            return "Integrity check failed! Expected hash: \(exp.prefix(8))..., Got: \(act.prefix(8))..."
+            return "Integrity check failed! Expected: \(exp.prefix(8))..., Got: \(act.prefix(8))..."
         case .emptyPassword:
             return "Master password cannot be empty."
         }
     }
 }
+
+// MARK: - Core Cryptography Operations
 
 final class VaultCrypto {
     static let saltLength = 16
@@ -71,7 +75,6 @@ final class VaultCrypto {
         return decrypted
     }
 
-    /// Fast hardware-accelerated SHA-256 calculation
     static func computeSHA256(data: Data) -> String {
         let digest = SHA256.hash(data: data)
         return digest.compactMap { String(format: "%02x", $0) }.joined()

@@ -13,7 +13,6 @@ final class VaultManager: ObservableObject {
     @Published var statusDescription: String = "Locked"
     @Published var activeError: String? = nil
     @Published var isBiometricsAvailable: Bool = false
-    @Published var pendingSharedImportsCount: Int = 0
 
     @Published private(set) var filesByFolder: [UUID?: [EncryptedFileHeader]] = [:]
     @Published private(set) var subfoldersByParent: [UUID?: [VaultFolder]] = [:]
@@ -23,15 +22,12 @@ final class VaultManager: ObservableObject {
     private var cachedPassword: String? = nil
     private let keychainService = "com.likithsai.vaultios.master"
 
-    // App Group ID for the Share Extension
-    static let appGroupId = "group.com.likithsai.vaultios"
-
     private static let magicHeader = "IVLT".data(using: .utf8)!
     private static let headerSize: UInt64 = 40
 
     init() {
         checkBiometricAvailability()
-        checkSharedSpoolCount()
+        refreshAvailableVaults()
     }
 
     func checkBiometricAvailability() {
@@ -40,37 +36,20 @@ final class VaultManager: ObservableObject {
         self.isBiometricsAvailable = context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error)
     }
 
-    // MARK: - App Group Shared Spool Support
-
-    private var sharedSpoolURL: URL? {
-        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: Self.appGroupId)?
-            .appendingPathComponent("SharedImports", isDirectory: true)
-    }
-
-    func checkSharedSpoolCount() {
-        guard let spoolDir = sharedSpoolURL, FileManager.default.fileExists(atPath: spoolDir.path) else {
-            pendingSharedImportsCount = 0
-            return
+    func evaluateBiometricPrompt() async -> Bool {
+        let context = LAContext()
+        var error: NSError?
+        guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) else {
+            return false
         }
-        let items = (try? FileManager.default.contentsOfDirectory(at: spoolDir, includingPropertiesForKeys: nil)) ?? []
-        self.pendingSharedImportsCount = items.count
-    }
-
-    func drainSharedExtensionSpool() async {
-        guard isUnlocked, let spoolDir = sharedSpoolURL else { return }
-        guard let items = try? FileManager.default.contentsOfDirectory(at: spoolDir, includingPropertiesForKeys: nil), !items.isEmpty else { return }
-
-        isBusy = true
-        statusDescription = "Importing shared files (\(items.count))..."
-
-        for item in items {
-            await importFile(name: item.lastPathComponent, sourceURL: item, folderId: nil)
-            try? FileManager.default.removeItem(at: item)
+        do {
+            return try await context.evaluatePolicy(
+                .deviceOwnerAuthenticationWithBiometrics,
+                localizedReason: "Unlock IronVault"
+            )
+        } catch {
+            return false
         }
-
-        checkSharedSpoolCount()
-        isBusy = false
-        self.statusDescription = "Shared items imported"
     }
 
     private func rebuildLookupIndex() {
@@ -141,34 +120,11 @@ final class VaultManager: ObservableObject {
             if saveToBiometrics {
                 savePasswordToKeychain(password: password, vaultURL: fileURL)
             }
-
-            // Auto-check shared queue
-            checkSharedSpoolCount()
-            if pendingSharedImportsCount > 0 {
-                await drainSharedExtensionSpool()
-            }
         } catch {
             self.activeError = error.localizedDescription
             self.statusDescription = "Authentication failed"
         }
         isBusy = false
-    }
-
-    func unlockWithBiometrics(at originalURL: URL) async {
-        guard let savedPassword = readPasswordFromKeychain(for: originalURL) else {
-            self.activeError = "No biometrics enrolled for this container."
-            return
-        }
-
-        let context = LAContext()
-        do {
-            let success = try await context.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: "Unlock IronVault")
-            if success {
-                await unlockVault(at: originalURL, password: savedPassword, saveToBiometrics: false)
-            }
-        } catch {
-            self.activeError = "Biometric authentication failed."
-        }
     }
 
     func createNewVault(at targetURL: URL, password: String, saveToBiometrics: Bool = false) async {
@@ -227,7 +183,7 @@ final class VaultManager: ObservableObject {
         isBusy = false
     }
 
-    // MARK: - Append File with Instant SHA-256 Computation
+    // MARK: - Append File In-Place
 
     func importFile(name: String, sourceURL: URL, folderId: UUID?) async {
         guard let key = masterKey, let vaultURL = activeVaultURL else { return }
@@ -241,8 +197,6 @@ final class VaultManager: ObservableObject {
 
         do {
             let rawData = try Data(contentsOf: sourceURL, options: .alwaysMapped)
-            
-            // Single-pass fast hardware SHA-256 and AES encryption
             let checksum = VaultCrypto.computeSHA256(data: rawData)
             let encryptedBlock = try await Task.detached(priority: .userInitiated) {
                 try VaultCrypto.encryptBlock(plainData: rawData, using: key)
@@ -293,7 +247,69 @@ final class VaultManager: ObservableObject {
         isBusy = false
     }
 
-    // MARK: - Lazy Chunk Decryption with SHA-256 Integrity Verification
+    // MARK: - Coordinated Recursive Folder Import
+
+    func importFolderRecursively(from rootFolderURL: URL, parentFolderId: UUID?) async {
+        isBusy = true
+        statusDescription = "Preparing folder import..."
+
+        let didAccess = rootFolderURL.startAccessingSecurityScopedResource()
+        defer {
+            if didAccess { rootFolderURL.stopAccessingSecurityScopedResource() }
+        }
+
+        let rootName = rootFolderURL.lastPathComponent
+        let rootFolderId = UUID()
+        let rootFolder = VaultFolder(id: rootFolderId, name: rootName, parent_id: parentFolderId)
+        metadata.folders.append(rootFolder)
+
+        var directoryIdMap: [URL: UUID] = [rootFolderURL.standardizedFileURL: rootFolderId]
+
+        let fileManager = FileManager.default
+        let keys: [URLResourceKey] = [.isDirectoryKey, .isRegularFileKey]
+
+        guard let enumerator = fileManager.enumerator(
+            at: rootFolderURL,
+            includingPropertiesForKeys: keys,
+            options: [.skipsHiddenFiles, .producesRelativePathURLs]
+        ) else {
+            isBusy = false
+            return
+        }
+
+        var pendingFilesToImport: [(name: String, url: URL, folderId: UUID)] = []
+
+        while let itemURL = enumerator.nextObject() as? URL {
+            let fullURL = itemURL.standardizedFileURL
+            guard let values = try? fullURL.resourceValues(forKeys: Set(keys)) else { continue }
+
+            let parentURL = fullURL.deletingLastPathComponent().standardizedFileURL
+            let assignedParentId = directoryIdMap[parentURL] ?? rootFolderId
+
+            if values.isDirectory == true {
+                let newSubId = UUID()
+                let subFolder = VaultFolder(id: newSubId, name: fullURL.lastPathComponent, parent_id: assignedParentId)
+                metadata.folders.append(subFolder)
+                directoryIdMap[fullURL] = newSubId
+            } else if values.isRegularFile == true {
+                pendingFilesToImport.append((fullURL.lastPathComponent, fullURL, assignedParentId))
+            }
+        }
+
+        var count = 0
+        for item in pendingFilesToImport {
+            count += 1
+            statusDescription = "Importing \(count)/\(pendingFilesToImport.count): \(item.name)..."
+            await importFile(name: item.name, sourceURL: item.url, folderId: item.folderId)
+        }
+
+        rebuildLookupIndex()
+        await persistIndexOnly()
+        isBusy = false
+        statusDescription = "Folder import complete"
+    }
+
+    // MARK: - Lazy Chunk Decryption & Verification
 
     func readAndDecryptPayload(for file: EncryptedFileHeader) throws -> Data {
         guard let key = masterKey, let vaultURL = activeVaultURL else { throw CryptoVaultError.decryptionFailed }
@@ -313,7 +329,6 @@ final class VaultManager: ObservableObject {
 
         let decrypted = try VaultCrypto.decryptBlock(combinedCiphertext: encryptedBlock, using: key)
 
-        // Verify SHA-256 integrity if present
         if !file.sha256_checksum.isEmpty {
             let actualHash = VaultCrypto.computeSHA256(data: decrypted)
             if actualHash.lowercased() != file.sha256_checksum.lowercased() {
@@ -323,90 +338,6 @@ final class VaultManager: ObservableObject {
 
         return decrypted
     }
-
-    // MARK: - Container Compaction / Vacuum (Zero RAM Thrashing)
-
-    /// Copies only referenced blocks sequentially to reclaim unallocated deleted spaces
-    func vacuumAndCompactContainer() async {
-        guard isUnlocked, let vaultURL = activeVaultURL, let key = masterKey, let salt = cachedSalt else { return }
-        isBusy = true
-        statusDescription = "Defragmenting & compacting container..."
-
-        let didAccess = vaultURL.startAccessingSecurityScopedResource()
-        defer {
-            if didAccess { vaultURL.stopAccessingSecurityScopedResource() }
-        }
-
-        do {
-            let tempCompactURL = FileManager.default.temporaryDirectory.appendingPathComponent("compacted_\(UUID().uuidString).ivault")
-            FileManager.default.createFile(atPath: tempCompactURL.path, contents: nil)
-
-            let readHandle = try FileHandle(forReadingFrom: vaultURL)
-            let writeHandle = try FileHandle(forWritingTo: tempCompactURL)
-
-            // Write 40-byte header placeholder
-            var currentWriteOffset = Self.headerSize
-            var dummyOffset: UInt64 = 0
-            var dummyLen: UInt64 = 0
-            var reserved: UInt32 = 0
-
-            var header = Data()
-            header.append(Self.magicHeader)
-            header.append(salt)
-            header.append(Data(bytes: &dummyOffset, count: 8))
-            header.append(Data(bytes: &dummyLen, count: 8))
-            header.append(Data(bytes: &reserved, count: 4))
-            try writeHandle.write(contentsOf: header)
-
-            var compactedHeaders: [EncryptedFileHeader] = []
-
-            // Copy active blocks in 64KB stream buffers without loading whole files into memory
-            for var f in metadata.fileHeaders {
-                try readHandle.seek(toOffset: f.block_offset)
-                guard let cipherData = try readHandle.read(upToCount: Int(f.block_length)) else { continue }
-
-                f.block_offset = currentWriteOffset
-                try writeHandle.seek(toOffset: currentWriteOffset)
-                try writeHandle.write(contentsOf: cipherData)
-
-                currentWriteOffset += f.block_length
-                compactedHeaders.append(f)
-            }
-
-            // Write updated metadata table
-            var compactedMetadata = metadata
-            compactedMetadata.fileHeaders = compactedHeaders
-
-            let serialized = try JSONEncoder().encode(compactedMetadata)
-            let encryptedIndex = try VaultCrypto.encryptBlock(plainData: serialized, using: key)
-
-            var finalIndexOffset = currentWriteOffset
-            var finalIndexLength = UInt64(encryptedIndex.count)
-
-            try writeHandle.seek(toOffset: finalIndexOffset)
-            try writeHandle.write(contentsOf: encryptedIndex)
-
-            // Finalize header offsets
-            try writeHandle.seek(toOffset: 20)
-            try writeHandle.write(contentsOf: Data(bytes: &finalIndexOffset, count: 8))
-            try writeHandle.write(contentsOf: Data(bytes: &finalIndexLength, count: 8))
-
-            try writeHandle.close()
-            try readHandle.close()
-
-            // Atomically replace file
-            _ = try FileManager.default.replaceItemAt(vaultURL, withItemAt: tempCompactURL)
-
-            self.metadata = compactedMetadata
-            self.rebuildLookupIndex()
-            self.statusDescription = "Vacuum complete"
-        } catch {
-            self.activeError = "Compaction error: \(error.localizedDescription)"
-        }
-        isBusy = false
-    }
-
-    // MARK: - File Management Operations
 
     private func persistIndexOnly() async {
         guard let key = masterKey, let vaultURL = activeVaultURL else { return }
@@ -439,6 +370,8 @@ final class VaultManager: ObservableObject {
         }
     }
 
+    // MARK: - Item Management
+
     func deleteFile(id: UUID) async {
         if let idx = metadata.fileHeaders.firstIndex(where: { $0.id == id }) {
             metadata.fileHeaders.remove(at: idx)
@@ -462,8 +395,6 @@ final class VaultManager: ObservableObject {
             await persistIndexOnly()
         }
     }
-
-    // MARK: - Folders
 
     func createFolder(name: String, parentId: UUID?) async {
         let folder = VaultFolder(name: name, parent_id: parentId)
@@ -642,20 +573,26 @@ final class VaultManager: ObservableObject {
         return String(data: data, encoding: .utf8)
     }
     
-    func evaluateBiometricPrompt() async -> Bool {
-        let context = LAContext()
-        var error: NSError?
-        guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) else {
-            return false
-        }
+    // MARK: - Known Vaults Tracking
 
-        do {
-            return try await context.evaluatePolicy(
-                .deviceOwnerAuthenticationWithBiometrics,
-                localizedReason: "Unlock IronVault"
-            )
-        } catch {
-            return false
+    @Published var availableVaults: [URL] = []
+
+    func refreshAvailableVaults() {
+        let fileManager = FileManager.default
+        var discovered: [URL] = []
+        
+        // 1. Documents directory (internal vaults)
+        if let docs = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first {
+            if let contents = try? fileManager.contentsOfDirectory(at: docs, includingPropertiesForKeys: nil) {
+                discovered.append(contentsOf: contents.filter { $0.pathExtension == "ivault" })
+            }
         }
+        
+        // 2. Add last used vault if not already in list
+        if let lastVault = activeVaultURL, !discovered.contains(lastVault) {
+            discovered.append(lastVault)
+        }
+        
+        self.availableVaults = discovered
     }
 }

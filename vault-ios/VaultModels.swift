@@ -1,5 +1,7 @@
 import Foundation
 
+// MARK: - Structural Vault Entities
+
 struct VaultFolder: Identifiable, Codable, Equatable, Hashable {
     let id: UUID
     var name: String
@@ -26,8 +28,7 @@ struct VaultFolder: Identifiable, Codable, Equatable, Hashable {
     }
 }
 
-/// Lightweight index descriptor with precomputed SHA-256 checksum
-struct EncryptedFileHeader: Identifiable, Codable, Equatable {
+struct EncryptedFileHeader: Identifiable, Codable, Equatable, Hashable {
     let id: UUID
     var file_name: String
     var file_size_bytes: Int
@@ -35,7 +36,7 @@ struct EncryptedFileHeader: Identifiable, Codable, Equatable {
     var created_at: Date
     var block_offset: UInt64
     var block_length: UInt64
-    var sha256_checksum: String // Precomputed SHA-256 hex string
+    var sha256_checksum: String
 
     init(
         id: UUID = UUID(),
@@ -70,16 +71,8 @@ struct EncryptedFileHeader: Identifiable, Codable, Equatable {
         self.created_at = try container.decodeIfPresent(Date.self, forKey: .created_at) ?? Date()
         self.block_offset = try container.decode(UInt64.self, forKey: .block_offset)
         self.block_length = try container.decode(UInt64.self, forKey: .block_length)
-        // Backward compatibility for vaults without checksums
         self.sha256_checksum = try container.decodeIfPresent(String.self, forKey: .sha256_checksum) ?? ""
     }
-}
-
-enum VaultSortOption: String, CaseIterable, Identifiable {
-    case name = "Name"
-    case size = "Size"
-    case date = "Date Added"
-    var id: String { rawValue }
 }
 
 struct VaultMetadataIndex: Codable {
