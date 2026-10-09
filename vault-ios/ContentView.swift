@@ -53,6 +53,12 @@ struct ContentView: View {
     @State private var displayedItems: [UnifiedVaultItem] = []
     @State private var searchDebounceTask: Task<Void, Never>? = nil
 
+    // Multiselect Edit State
+    @State private var editMode: EditMode = .inactive
+    @State private var selectedItemIDs: Set<UUID> = []
+    @State private var isShowingBatchDeleteConfirmation = false
+    @State private var isShowingBatchMoveSheet = false
+
     // System Pickers
     @State private var isVaultPickerOpen = false
     @State private var isVaultSaverOpen = false
@@ -103,7 +109,6 @@ struct ContentView: View {
             .navigationTitle(manager.isUnlocked ? (navigationStackPath.last?.name ?? "Vault") : "IronVault")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { navigationToolbarContent }
-            // System Importers & Exporters
             .fileImporter(
                 isPresented: $isVaultPickerOpen,
                 allowedContentTypes: [UTType.item],
@@ -139,7 +144,27 @@ struct ContentView: View {
             ) { result in
                 handleFolderImports(result)
             }
-            // Application Sheets
+            // Batch Delete Alert
+            .alert("Delete Selected Items?", isPresented: $isShowingBatchDeleteConfirmation) {
+                Button("Delete (\(selectedItemIDs.count))", role: .destructive) {
+                    let ids = selectedItemIDs
+                    Task {
+                        await manager.batchDelete(itemIDs: ids)
+                        selectedItemIDs.removeAll()
+                        editMode = .inactive
+                        updateDisplayedItems()
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This will permanently remove the \(selectedItemIDs.count) selected items from your encrypted vault.")
+            }
+            // Batch Move Sheet
+            .sheet(isPresented: $isShowingBatchMoveSheet) {
+                batchMoveDestinationSheet
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+            }
             .sheet(isPresented: $isShowingSettingsSheet) {
                 settingsModalSheet
                     .presentationDetents([.medium, .large])
@@ -173,7 +198,6 @@ struct ContentView: View {
                     .presentationDetents([.medium])
                     .presentationDragIndicator(.visible)
             }
-            // Management Alerts
             .alert("New Folder", isPresented: $isCreatingFolder) {
                 TextField("Folder Name", text: $newFolderNameBuffer)
                     .multilineTextAlignment(.center)
@@ -242,11 +266,14 @@ struct ContentView: View {
             } message: {
                 Text(manager.activeError ?? "An unexpected exception occurred.")
             }
-            // Memoization Pipeline Triggers
-            .onChange(of: currentFolderId) { _ in updateDisplayedItems() }
+            .onChange(of: currentFolderId) { _ in
+                selectedItemIDs.removeAll()
+                editMode = .inactive
+                updateDisplayedItems()
+            }
             .onChange(of: manager.metadata.fileHeaders.count) { _ in updateDisplayedItems() }
             .onChange(of: manager.metadata.folders.count) { _ in updateDisplayedItems() }
-            .onChange(of: searchFilter) { newQuery in
+            .onChange(of: searchFilter) { _ in
                 searchDebounceTask?.cancel()
                 searchDebounceTask = Task {
                     try? await Task.sleep(nanoseconds: 150_000_000)
@@ -258,86 +285,93 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Memoization Pipeline
-
-    private func updateDisplayedItems() {
-        let trimmed = searchFilter.trimmingCharacters(in: .whitespaces)
-        let isSearching = !trimmed.isEmpty
-
-        let matchingFolders: [VaultFolder]
-        let matchingFiles: [EncryptedFileHeader]
-
-        if isSearching {
-            matchingFolders = manager.metadata.folders.filter {
-                $0.name.localizedCaseInsensitiveContains(trimmed)
-            }
-            matchingFiles = manager.metadata.fileHeaders.filter {
-                $0.file_name.localizedCaseInsensitiveContains(trimmed)
-            }
-        } else {
-            matchingFolders = manager.subfoldersByParent[currentFolderId] ?? []
-            matchingFiles = manager.filesByFolder[currentFolderId] ?? []
-        }
-
-        var items: [UnifiedVaultItem] = []
-        items.reserveCapacity(matchingFolders.count + matchingFiles.count)
-        items.append(contentsOf: matchingFolders.map { UnifiedVaultItem.from(folder: $0) })
-        items.append(contentsOf: matchingFiles.map { UnifiedVaultItem.from(file: $0) })
-        self.displayedItems = items
-    }
-
     // MARK: - Navigation Toolbar
 
     @ToolbarContentBuilder
     private var navigationToolbarContent: some ToolbarContent {
         if manager.isUnlocked {
             ToolbarItem(placement: .topBarLeading) {
-                Button {
-                    withAnimation(.snappy(duration: 0.2)) {
-                        currentFolderId = nil
-                        navigationStackPath = [(nil, "Vault")]
-                        searchFilter = ""
-                        manager.lockVault()
+                if editMode.isEditing {
+                    Button("Done") {
+                        withAnimation(.snappy(duration: 0.2)) {
+                            editMode = .inactive
+                            selectedItemIDs.removeAll()
+                        }
                     }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 14, weight: .bold))
-                        Text("Vaults")
-                            .font(.system(size: 16))
+                    .fontWeight(.semibold)
+                } else {
+                    Button {
+                        withAnimation(.snappy(duration: 0.2)) {
+                            currentFolderId = nil
+                            navigationStackPath = [(nil, "Vault")]
+                            searchFilter = ""
+                            selectedItemIDs.removeAll()
+                            manager.lockVault()
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "chevron.left")
+                                .font(.system(size: 14, weight: .bold))
+                            Text("Vaults")
+                                .font(.system(size: 16))
+                        }
+                        .foregroundStyle(Color.accentColor)
                     }
-                    .foregroundStyle(Color.accentColor)
                 }
             }
 
             ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Section("Add Content") {
-                        Button { isCreatingFolder = true } label: {
-                            Label("New Folder", systemImage: "folder.badge.plus")
+                if editMode.isEditing {
+                    Button {
+                        if selectedItemIDs.count == displayedItems.count {
+                            selectedItemIDs.removeAll()
+                        } else {
+                            selectedItemIDs = Set(displayedItems.map { $0.id })
                         }
-                        Button { isFolderPickerOpen = true } label: {
-                            Label("Import Folder...", systemImage: "folder.badge.gearshape")
-                        }
-                        Button { isDocumentPickerOpen = true } label: {
-                            Label("Import Files...", systemImage: "doc.badge.plus")
-                        }
+                    } label: {
+                        Text(selectedItemIDs.count == displayedItems.count ? "Deselect All" : "Select All")
+                            .font(.system(size: 15))
                     }
+                } else {
+                    HStack(spacing: 12) {
+                        if !displayedItems.isEmpty {
+                            Button("Select") {
+                                withAnimation(.snappy(duration: 0.2)) {
+                                    editMode = .active
+                                }
+                            }
+                            .font(.system(size: 15))
+                        }
 
-                    Section("Security & Storage") {
-                        Button { isShowingVaultInfo = true } label: {
-                            Label("Vault Properties", systemImage: "info.circle")
-                        }
-                        Button { isShowingRekeySheet = true } label: {
-                            Label("Change Password", systemImage: "key.fill")
+                        Menu {
+                            Section("Add Content") {
+                                Button { isCreatingFolder = true } label: {
+                                    Label("New Folder", systemImage: "folder.badge.plus")
+                                }
+                                Button { isFolderPickerOpen = true } label: {
+                                    Label("Import Folder...", systemImage: "folder.badge.gearshape")
+                                }
+                                Button { isDocumentPickerOpen = true } label: {
+                                    Label("Import Files...", systemImage: "doc.badge.plus")
+                                }
+                            }
+
+                            Section("Security & Storage") {
+                                Button { isShowingVaultInfo = true } label: {
+                                    Label("Vault Properties", systemImage: "info.circle")
+                                }
+                                Button { isShowingRekeySheet = true } label: {
+                                    Label("Change Password", systemImage: "key.fill")
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "plus")
+                                .font(.system(size: 16, weight: .semibold))
+                                .foregroundStyle(Color.accentColor)
+                                .frame(width: 36, height: 36)
+                                .contentShape(Rectangle())
                         }
                     }
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(Color.accentColor)
-                        .frame(width: 36, height: 36)
-                        .contentShape(Rectangle())
                 }
             }
         } else {
@@ -368,6 +402,243 @@ struct ContentView: View {
                 }
             }
         }
+    }
+
+    // MARK: - Main Opened Vault Content
+
+    private var mainVaultContent: some View {
+        VStack(spacing: 0) {
+            if !editMode.isEditing {
+                vaultSearchBar
+                    .padding(.top, 12)
+                    .padding(.bottom, 6)
+                    .background(Color(uiColor: .systemBackground))
+
+                if navigationStackPath.count > 1 {
+                    breadcrumbPillBar
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+
+            activeUnifiedList
+
+            // Multiselect Bottom Action Bar
+            if editMode.isEditing {
+                multiselectActionBar
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .environment(\.editMode, $editMode)
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 25, coordinateSpace: .local)
+                .onEnded { gesture in
+                    guard !editMode.isEditing else { return }
+                    let startX = gesture.startLocation.x
+                    let dx = gesture.translation.width
+                    let dy = gesture.translation.height
+
+                    let isFromLeftEdge = startX <= 40
+                    let isRightSwipe = dx > 70 && dx > (abs(dy) * 2)
+
+                    if navigationStackPath.count > 1 && isFromLeftEdge && isRightSwipe {
+                        popFolderLevel()
+                    }
+                }
+        )
+    }
+
+    // MARK: - Multiselect Bottom Bar
+
+    private var multiselectActionBar: some View {
+        HStack {
+            Button {
+                isShowingBatchMoveSheet = true
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "folder.badge.gearshape")
+                    Text("Move (\(selectedItemIDs.count))")
+                }
+                .font(.system(size: 15, weight: .medium))
+            }
+            .disabled(selectedItemIDs.isEmpty)
+
+            Spacer()
+
+            Button(role: .destructive) {
+                isShowingBatchDeleteConfirmation = true
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "trash")
+                    Text("Delete (\(selectedItemIDs.count))")
+                }
+                .font(.system(size: 15, weight: .medium))
+            }
+            .disabled(selectedItemIDs.isEmpty)
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 14)
+        .background(Color(uiColor: .secondarySystemBackground))
+        .overlay(alignment: .top) { Divider() }
+    }
+
+    // MARK: - Batch Move Destination Sheet
+
+    private var batchMoveDestinationSheet: some View {
+        NavigationStack {
+            List {
+                Section("Select Target Destination") {
+                    Button {
+                        let ids = selectedItemIDs
+                        Task {
+                            await manager.batchMove(itemIDs: ids, toFolderId: nil)
+                            selectedItemIDs.removeAll()
+                            editMode = .inactive
+                            isShowingBatchMoveSheet = false
+                            updateDisplayedItems()
+                        }
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "lock.shield.fill")
+                                .foregroundStyle(Color.accentColor)
+                            Text("Root Directory")
+                                .fontWeight(.medium)
+                            Spacer()
+                        }
+                    }
+
+                    // Exclude folders that are currently selected to move
+                    ForEach(manager.metadata.folders.filter { !selectedItemIDs.contains($0.id) }) { folder in
+                        Button {
+                            let ids = selectedItemIDs
+                            Task {
+                                await manager.batchMove(itemIDs: ids, toFolderId: folder.id)
+                                selectedItemIDs.removeAll()
+                                editMode = .inactive
+                                isShowingBatchMoveSheet = false
+                                updateDisplayedItems()
+                            }
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: "folder.fill")
+                                    .foregroundStyle(.blue)
+                                Text(folder.name)
+                                Spacer()
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Move \(selectedItemIDs.count) Items")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { isShowingBatchMoveSheet = false }
+                }
+            }
+        }
+    }
+
+    // MARK: - Unified Single List
+
+    private var activeUnifiedList: some View {
+        Group {
+            if displayedItems.isEmpty {
+                emptyDirectoryStateView(isSearching: !searchFilter.isEmpty)
+            } else {
+                List(selection: $selectedItemIDs) {
+                    ForEach(displayedItems) { item in
+                        switch item.type {
+                        case .folder(let folder):
+                            folderRowView(folder)
+                                .tag(item.id)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    if editMode.isEditing {
+                                        if selectedItemIDs.contains(item.id) {
+                                            selectedItemIDs.remove(item.id)
+                                        } else {
+                                            selectedItemIDs.insert(item.id)
+                                        }
+                                    } else {
+                                        withAnimation(.snappy(duration: 0.2)) {
+                                            currentFolderId = folder.id
+                                            navigationStackPath.append((folder.id, folder.name))
+                                            searchFilter = ""
+                                        }
+                                    }
+                                }
+                                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                                .contextMenu {
+                                    if !editMode.isEditing {
+                                        itemContextMenu(name: folder.name, id: folder.id, isFolder: true, fileHeader: nil)
+                                    }
+                                }
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    if !editMode.isEditing {
+                                        itemTrailingSwipeActions(name: folder.name, id: folder.id, isFolder: true, fileHeader: nil)
+                                    }
+                                }
+
+                        case .file(let file):
+                            fileRowView(file)
+                                .tag(item.id)
+                                .contentShape(Rectangle())
+                                .onTapGesture {
+                                    if editMode.isEditing {
+                                        if selectedItemIDs.contains(item.id) {
+                                            selectedItemIDs.remove(item.id)
+                                        } else {
+                                            selectedItemIDs.insert(item.id)
+                                        }
+                                    } else {
+                                        exportAndPreview(file: file)
+                                    }
+                                }
+                                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+                                .contextMenu {
+                                    if !editMode.isEditing {
+                                        itemContextMenu(name: file.file_name, id: file.id, isFolder: false, fileHeader: file)
+                                    }
+                                }
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    if !editMode.isEditing {
+                                        itemTrailingSwipeActions(name: file.file_name, id: file.id, isFolder: false, fileHeader: file)
+                                    }
+                                }
+                        }
+                    }
+                }
+                .listStyle(.plain)
+            }
+        }
+    }
+
+    // MARK: - Memoization Pipeline
+
+    private func updateDisplayedItems() {
+        let trimmed = searchFilter.trimmingCharacters(in: .whitespaces)
+        let isSearching = !trimmed.isEmpty
+
+        let matchingFolders: [VaultFolder]
+        let matchingFiles: [EncryptedFileHeader]
+
+        if isSearching {
+            matchingFolders = manager.metadata.folders.filter {
+                $0.name.localizedCaseInsensitiveContains(trimmed)
+            }
+            matchingFiles = manager.metadata.fileHeaders.filter {
+                $0.file_name.localizedCaseInsensitiveContains(trimmed)
+            }
+        } else {
+            matchingFolders = manager.subfoldersByParent[currentFolderId] ?? []
+            matchingFiles = manager.filesByFolder[currentFolderId] ?? []
+        }
+
+        var items: [UnifiedVaultItem] = []
+        items.reserveCapacity(matchingFolders.count + matchingFiles.count)
+        items.append(contentsOf: matchingFolders.map { UnifiedVaultItem.from(folder: $0) })
+        items.append(contentsOf: matchingFiles.map { UnifiedVaultItem.from(file: $0) })
+        self.displayedItems = items
     }
 
     // MARK: - Initial Vaults Landing
@@ -468,39 +739,6 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Main Opened Vault Content
-
-    private var mainVaultContent: some View {
-        VStack(spacing: 0) {
-            vaultSearchBar
-                .padding(.top, 12)
-                .padding(.bottom, 6)
-                .background(Color(uiColor: .systemBackground))
-
-            if navigationStackPath.count > 1 {
-                breadcrumbPillBar
-                    .transition(.move(edge: .top).combined(with: .opacity))
-            }
-
-            activeUnifiedList
-        }
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 25, coordinateSpace: .local)
-                .onEnded { gesture in
-                    let startX = gesture.startLocation.x
-                    let dx = gesture.translation.width
-                    let dy = gesture.translation.height
-
-                    let isFromLeftEdge = startX <= 40
-                    let isRightSwipe = dx > 70 && dx > (abs(dy) * 2)
-
-                    if navigationStackPath.count > 1 && isFromLeftEdge && isRightSwipe {
-                        popFolderLevel()
-                    }
-                }
-        )
-    }
-
     // MARK: - In-Vault Search Bar Component
 
     private var vaultSearchBar: some View {
@@ -592,55 +830,8 @@ struct ContentView: View {
                 }
             }
         }
-        .background(Color(uiColor: .secondarySystemBackground))
+        .padding(.bottom, 8)
         .overlay(alignment: .bottom) { Divider() }
-    }
-
-    // MARK: - Unified Single List
-
-    private var activeUnifiedList: some View {
-        Group {
-            if displayedItems.isEmpty {
-                emptyDirectoryStateView(isSearching: !searchFilter.isEmpty)
-            } else {
-                List {
-                    ForEach(displayedItems) { item in
-                        switch item.type {
-                        case .folder(let folder):
-                            folderRowView(folder)
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    withAnimation(.snappy(duration: 0.2)) {
-                                        currentFolderId = folder.id
-                                        navigationStackPath.append((folder.id, folder.name))
-                                        searchFilter = ""
-                                    }
-                                }
-                                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-                                .contextMenu {
-                                    itemContextMenu(name: folder.name, id: folder.id, isFolder: true, fileHeader: nil)
-                                }
-                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                    itemTrailingSwipeActions(name: folder.name, id: folder.id, isFolder: true, fileHeader: nil)
-                                }
-
-                        case .file(let file):
-                            fileRowView(file)
-                                .contentShape(Rectangle())
-                                .onTapGesture { exportAndPreview(file: file) }
-                                .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
-                                .contextMenu {
-                                    itemContextMenu(name: file.file_name, id: file.id, isFolder: false, fileHeader: file)
-                                }
-                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                    itemTrailingSwipeActions(name: file.file_name, id: file.id, isFolder: false, fileHeader: file)
-                                }
-                        }
-                    }
-                }
-                .listStyle(.plain)
-            }
-        }
     }
 
     // MARK: - Empty Directory Placeholder
@@ -690,9 +881,11 @@ struct ContentView: View {
 
             Spacer()
 
-            Image(systemName: "chevron.right")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.tertiary)
+            if !editMode.isEditing {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
         }
         .padding(.vertical, 2)
     }

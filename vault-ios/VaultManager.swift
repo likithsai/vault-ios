@@ -795,4 +795,71 @@ final class VaultManager: ObservableObject {
         guard status == errSecSuccess, let data = item as? Data else { return nil }
         return String(data: data, encoding: .utf8)
     }
+    
+    // MARK: - Batch Item Operations
+
+        func batchDelete(itemIDs: Set<UUID>) async {
+            guard !itemIDs.isEmpty else { return }
+
+            // 1. Collect all folder IDs to delete (including nested descendants)
+            var toDeleteFolderIDs = Set<UUID>()
+            let selectedFolderIDs = itemIDs.intersection(Set(metadata.folders.map { $0.id }))
+            toDeleteFolderIDs.formUnion(selectedFolderIDs)
+
+            var addedMore = true
+            while addedMore {
+                let nested = metadata.folders.filter { f in
+                    if let p = f.parent_id, toDeleteFolderIDs.contains(p) {
+                        return !toDeleteFolderIDs.contains(f.id)
+                    }
+                    return false
+                }.map { $0.id }
+                if nested.isEmpty { addedMore = false } else { toDeleteFolderIDs.formUnion(nested) }
+            }
+
+            // 2. Remove files: either directly selected OR inside any deleted folder
+            metadata.fileHeaders.removeAll { f in
+                itemIDs.contains(f.id) || (f.folder_id != nil && toDeleteFolderIDs.contains(f.folder_id!))
+            }
+
+            // 3. Remove all marked folders
+            metadata.folders.removeAll { toDeleteFolderIDs.contains($0.id) }
+
+            rebuildLookupIndex()
+            await persistIndexOnly()
+        }
+
+        func batchMove(itemIDs: Set<UUID>, toFolderId: UUID?) async {
+            guard !itemIDs.isEmpty else { return }
+
+            // Prevent moving a folder into itself or into its own descendants
+            func isDescendant(target: UUID?, of folderId: UUID) -> Bool {
+                var curr = target
+                while let p = curr {
+                    if p == folderId { return true }
+                    curr = metadata.folders.first(where: { $0.id == p })?.parent_id
+                }
+                return false
+            }
+
+            // 1. Move valid folders
+            for i in metadata.folders.indices {
+                let f = metadata.folders[i]
+                if itemIDs.contains(f.id) {
+                    if f.id != toFolderId && !isDescendant(target: toFolderId, of: f.id) {
+                        metadata.folders[i].parent_id = toFolderId
+                    }
+                }
+            }
+
+            // 2. Move selected files
+            for i in metadata.fileHeaders.indices {
+                if itemIDs.contains(metadata.fileHeaders[i].id) {
+                    metadata.fileHeaders[i].folder_id = toFolderId
+                }
+            }
+
+            rebuildLookupIndex()
+            await persistIndexOnly()
+        }
 }
